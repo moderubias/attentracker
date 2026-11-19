@@ -1,0 +1,45 @@
+name: Rust and desktop checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Linux camera dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libclang-dev clang libv4l-dev nasm
+      - name: Format check
+        run: cargo fmt --all --check
+      - name: Compile and test workspace
+        run: cargo test --workspace
+
+  desktop:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Linux Tauri prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libclang-dev clang libv4l-dev nasm libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf
+      - name: Frontend compile
+        working-directory: app/desktop
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Desktop Rust compile
+        working-directory: app/desktop/src-tauri
+        run: cargo check
