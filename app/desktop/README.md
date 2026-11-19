@@ -48,9 +48,10 @@ The main latency number measures camera wait + MJPEG decode + tensor prep
 measured separately. Actual model observation FPS is the reciprocal of the
 period between completed sampling passes, not the camera nominal FPS.
 
-The Tauri development workspace enables `opt-level = 2` for dependency
-crates to obtain more representative runtime measurements than Rust
-unoptimized defaults. This increases first build time and disk usage.
+The Tauri development workspace enables `opt-level = 2` only for
+selected CV and Tract crates, not the entire GTK/Tauri dependency tree.
+This makes runtime measurements more representative than Rust's fully
+unoptimized defaults, at the cost of extra compilation and disk usage.
 Use the profiler to compare before and after results, rather than assume
 a particular speedup. A truly fluid raw camera preview would require a
 separate capture/preview loop and remains future work.
