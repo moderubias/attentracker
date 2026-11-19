@@ -9,6 +9,7 @@ use tract::prelude::*;
 
 pub struct YuNetModel {
     runtime: Runnable,
+    input_side: u32,
 }
 
 #[derive(Debug)]
@@ -28,20 +29,37 @@ pub struct YuNetOutput {
 
 impl YuNetModel {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        Self::load_for_side(path, 640)
+    }
+
+    /// Specialize the ONNX graph before Tract compiles its execution plan.
+    /// YuNet output head sizes depend on the input side, so preprocessing and
+    /// postprocessing must use exactly the same value.
+    pub fn load_for_side(path: impl AsRef<Path>, input_side: u32) -> Result<Self> {
+        ensure!(
+            matches!(input_side, 160 | 320 | 640),
+            "unsupported YuNet input side: {input_side}"
+        );
         let begun = Instant::now();
-        let runtime = tract::onnx()?.load(path)?.into_model()?.into_runnable()?;
+        let mut model = tract::onnx()?.load(path)?;
+        if input_side != 640 {
+            let side = input_side as usize;
+            model.set_input_fact(0, f32::fact([1, 3, side, side]).into())?;
+        }
+        let runtime = model.into_model()?.into_runnable()?;
         tracing::info!(
             target: "attent_model::runtime",
             model = "YuNet",
+            input_side,
             load_ms = begun.elapsed().as_secs_f64() * 1000.0,
             "ONNX model loaded"
         );
-        Ok(Self { runtime })
+        Ok(Self { runtime, input_side })
     }
 
     pub fn infer(&self, input: &YuNetInput) -> Result<YuNetOutput> {
         ensure!(
-            input.shape == [1, 3, 640, 640],
+            input.shape == [1, 3, self.input_side as usize, self.input_side as usize],
             "Unexpected YuNet input shape: {:?}",
             input.shape
         );
@@ -132,5 +150,38 @@ impl YuNetOutput {
         }
 
         Ok(best)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smaller_yunet_input_is_executable() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models/yunet.onnx");
+        let side = 320_u32;
+        let model = YuNetModel::load_for_side(path, side)
+            .expect("Tract must compile the model for a 320x320 input");
+        let input = YuNetInput {
+            data: vec![0.0_f32; 3 * side as usize * side as usize],
+            shape: [1, 3, side as usize, side as usize],
+            transform: Letterbox {
+                source_width: 640,
+                source_height: 480,
+                input_side: side,
+                resized_width: side,
+                resized_height: 240,
+                pad_left: 0,
+                pad_top: 40,
+            },
+            frame_sequence: 1,
+            received_at: SystemTime::UNIX_EPOCH,
+            received_tick: Instant::now(),
+        };
+        let output = model.infer(&input).expect("320x320 inference must succeed");
+        assert_eq!(output.tensors.len(), 12);
+        assert_eq!(output.tensors[0].shape, vec![1, 40 * 40, 1]);
+        assert_eq!(output.tensors[6].shape, vec![1, 40 * 40, 4]);
     }
 }
