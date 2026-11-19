@@ -1,3 +1,4 @@
+mod capture_worker;
 mod diagnostics;
 mod monitor;
 mod preview;

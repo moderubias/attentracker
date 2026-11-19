@@ -1,5 +1,6 @@
 //! Ephemeral, opt-in diagnostic frames. Never persist or log camera pixels.
 use anyhow::Result;
+#[cfg(test)]
 use attent_camera::CapturedFrame;
 use attent_model::FaceDetection;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -28,8 +29,13 @@ pub struct FramePreview {
     /// An in-memory JPEG data URL; returned only when preview is opted into.
     pub data_url: String,
     pub faces: Vec<FaceOverlay>,
+    /// Detection is from an earlier analyzed frame in live preview mode.
+    /// None means there is no sufficiently recent detection to overlay.
+    pub detection_sequence: Option<u64>,
+    pub detection_age_ms: Option<f64>,
 }
 
+#[cfg(test)]
 pub fn encode_preview(frame: &CapturedFrame, faces: &[FaceDetection]) -> Result<FramePreview> {
     encode_preview_rgb(&frame.rgb, frame.meta.sequence, faces)
 }
@@ -73,6 +79,8 @@ pub fn encode_preview_rgb(
                 confidence: f.confidence,
             })
             .collect(),
+        detection_sequence: None,
+        detection_age_ms: None,
     })
 }
 
