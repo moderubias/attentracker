@@ -7,6 +7,16 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(5);
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct FrameTimings {
     pub capture_ms: f64,
+    /// Interval between successive frame receipts, not the hardware sensor FPS.
+    pub receive_period_ms: Option<f64>,
+    /// Time from completed frame receipt to publication of the numeric snapshot.
+    pub post_capture_age_ms: f64,
+    pub snapshot_lock_wait_ms: f64,
+    /// Identical backend timestamp; not proof of identical image pixels.
+    pub driver_timestamp_unchanged: bool,
+    pub preview_requested: bool,
+    pub preview_encoded: bool,
+    pub preview_error: bool,
     pub decode_ms: f64,
     pub preprocess_ms: f64,
     pub inference_ms: f64,
@@ -65,6 +75,11 @@ impl DiagnosticsWindow {
         let iteration_avg_ms = average(&self.timings, |x| x.iteration_ms);
         let iteration_p95_ms = percentile(&self.timings, |x| x.iteration_ms, 95);
         let period_avg_ms = average_present(&self.timings, |x| x.period_ms);
+        let preview_attempts = self.timings.iter().filter(|x| x.preview_requested).count();
+        let preview_encoded = self.timings.iter().filter(|x| x.preview_encoded).count();
+        let preview_errors = self.timings.iter().filter(|x| x.preview_error).count();
+        let unchanged_driver_timestamps =
+            self.timings.iter().filter(|x| x.driver_timestamp_unchanged).count();
 
         info!(
             target: "attent_core::telemetry",
@@ -76,6 +91,16 @@ impl DiagnosticsWindow {
             target_interval_ms = interval_ms,
             preview_enabled,
             capture_avg_ms = average(&self.timings, |x| x.capture_ms),
+            capture_p95_ms = percentile(&self.timings, |x| x.capture_ms, 95),
+            capture_max_ms = max_value(&self.timings, |x| x.capture_ms),
+            receive_period_avg_ms = average_present(&self.timings, |x| x.receive_period_ms),
+            post_capture_age_avg_ms = average(&self.timings, |x| x.post_capture_age_ms),
+            post_capture_age_p95_ms = percentile(&self.timings, |x| x.post_capture_age_ms, 95),
+            snapshot_lock_wait_p95_ms = percentile(&self.timings, |x| x.snapshot_lock_wait_ms, 95),
+            unchanged_driver_timestamps,
+            preview_attempts,
+            preview_encoded,
+            preview_errors,
             decode_avg_ms = average(&self.timings, |x| x.decode_ms),
             preprocess_avg_ms = average(&self.timings, |x| x.preprocess_ms),
             inference_avg_ms,
@@ -85,9 +110,12 @@ impl DiagnosticsWindow {
             postprocess_avg_ms = average(&self.timings, |x| x.postprocess_ms),
             preview_avg_ms = average(&self.timings, |x| x.preview_ms),
             pipeline_avg_ms,
+            pipeline_p95_ms = percentile(&self.timings, |x| x.pipeline_ms, 95),
+            pipeline_max_ms = max_value(&self.timings, |x| x.pipeline_ms),
             iteration_avg_ms,
             iteration_p95_ms,
             period_avg_ms,
+            period_p95_ms = percentile(&self.timings, |x| x.period_ms.unwrap_or(0.0), 95),
             planned_sleep_avg_ms = average(&self.timings, |x| x.planned_sleep_ms),
             scheduler_gap_avg_ms = average_present(&self.timings, |x| x.scheduler_gap_ms),
             "monitor performance summary"
