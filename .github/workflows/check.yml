@@ -54,3 +54,6 @@ jobs:
       - name: Desktop production asset protocol compile
         working-directory: app/desktop/src-tauri
         run: cargo check --release --features tauri/custom-protocol
+      - name: Desktop unit tests (model path selection)
+        working-directory: app/desktop/src-tauri
+        run: cargo test --bin attentracker-desktop
