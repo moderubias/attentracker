@@ -49,7 +49,9 @@ impl AttentCamera {
     pub fn devices() -> anyhow::Result<Vec<CameraInfo>> {
         let backend = native_api_backend().context("No native camera backend available")?;
 
-        Ok(query(backend)?)
+        let devices = query(backend)?;
+        tracing::info!(target: "attent_camera::device", devices = devices.len(), "camera enumeration complete");
+        Ok(devices)
     }
 
     /// `format` must be advertised by the selected device.
@@ -66,10 +68,23 @@ impl AttentCamera {
     /// Negotiates the nearest decodable format instead of requiring an exact match.
     /// This still requires the device to support the requested pixel encoding.
     pub fn new_preferred(index: CameraIndex, format: CameraFormat) -> Result<Self, NokhwaError> {
+        let opened_at = Instant::now();
+        tracing::info!(
+            target: "attent_camera::device",
+            camera_index = ?index,
+            requested_format = ?format,
+            "opening camera"
+        );
         let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(format));
         let mut camera = match Camera::new(index.clone(), requested) {
             Ok(camera) => camera,
-            Err(_) => {
+            Err(error) => {
+                tracing::warn!(
+                    target: "attent_camera::device",
+                    camera_index = ?index,
+                    error = %error,
+                    "preferred camera format unavailable; trying fallback"
+                );
                 // A camera may expose only another RGB-decodable pixel encoding.
                 let fallback = RequestedFormat::new::<RgbFormat>(
                     RequestedFormatType::AbsoluteHighestFrameRate,
@@ -78,6 +93,12 @@ impl AttentCamera {
             }
         };
         camera.open_stream()?;
+        tracing::info!(
+            target: "attent_camera::device",
+            negotiated_format = ?camera.camera_format(),
+            opened_ms = opened_at.elapsed().as_secs_f64() * 1000.0,
+            "camera stream opened"
+        );
         Ok(Self {
             camera,
             sequence: 0,
@@ -106,6 +127,15 @@ impl AttentCamera {
         let decode_duration = decode_start.elapsed();
 
         self.sequence = self.sequence.saturating_add(1);
+        tracing::trace!(
+            target: "attent_camera::capture",
+            sequence = self.sequence,
+            capture_ms = capture_duration.as_secs_f64() * 1000.0,
+            decode_ms = decode_duration.as_secs_f64() * 1000.0,
+            width = rgb.width(),
+            height = rgb.height(),
+            "frame captured and decoded"
+        );
         Ok(CapturedFrame {
             rgb,
             meta: CaptureMeta {
