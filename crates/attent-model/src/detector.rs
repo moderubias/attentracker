@@ -69,6 +69,10 @@ impl YuNetDetector {
         ensure!(output.tensors.len() == 12, "YuNet must return 12 tensors");
 
         let mut candidates = Vec::new();
+        let mut invalid_head_scores = 0usize;
+        let mut below_threshold = 0usize;
+        let mut invalid_boxes = 0usize;
+        let mut invalid_landmarks = 0usize;
         for (head, &stride) in STRIDES.iter().enumerate() {
             let cols = side / stride;
             let cells = cols * cols;
@@ -86,11 +90,13 @@ impl YuNetDetector {
                 let class_score = cls.values[idx];
                 let object_score = obj.values[idx];
                 if !class_score.is_finite() || !object_score.is_finite() {
+                    invalid_head_scores += 1;
                     continue;
                 }
                 let confidence =
                     (class_score.clamp(0.0, 1.0) * object_score.clamp(0.0, 1.0)).sqrt();
                 if confidence < self.config.score_threshold {
+                    below_threshold += 1;
                     continue;
                 }
 
@@ -99,6 +105,7 @@ impl YuNetDetector {
                 let step = stride as f32;
                 let b = &bbox.values[idx * 4..idx * 4 + 4];
                 if !b.iter().all(|v| v.is_finite()) {
+                    invalid_boxes += 1;
                     continue;
                 }
 
@@ -108,11 +115,13 @@ impl YuNetDetector {
                 let h = b[3].exp() * step;
                 let rect = [cx - w / 2.0, cy - h / 2.0, w, h];
                 if !rect.iter().all(|v| v.is_finite()) || w <= 0.0 || h <= 0.0 {
+                    invalid_boxes += 1;
                     continue;
                 }
 
                 let points = &kps.values[idx * 10..idx * 10 + 10];
                 if !points.iter().all(|v| v.is_finite()) {
+                    invalid_landmarks += 1;
                     continue;
                 }
                 let mut landmarks = [[0.0; 2]; 5];
@@ -121,6 +130,7 @@ impl YuNetDetector {
                     xy[1] = (row + points[i * 2 + 1]) * step;
                 }
                 if landmarks.iter().flatten().any(|v| !v.is_finite()) {
+                    invalid_landmarks += 1;
                     continue;
                 }
 
@@ -132,8 +142,11 @@ impl YuNetDetector {
             }
         }
 
+        let candidates_before_top_k = candidates.len();
         candidates.sort_unstable_by(|a, b| b.confidence.total_cmp(&a.confidence));
         candidates.truncate(self.config.top_k);
+        let mut nms_suppressed = 0usize;
+        let mut clipped_out = 0usize;
 
         let mut selected: Vec<Candidate> = Vec::new();
         let mut faces = Vec::new();
@@ -141,6 +154,7 @@ impl YuNetDetector {
             if selected.iter().any(|other| {
                 intersection_over_union(candidate.bbox, other.bbox) > self.config.nms_threshold
             }) {
+                nms_suppressed += 1;
                 continue;
             }
             selected.push(candidate);
@@ -157,6 +171,7 @@ impl YuNetDetector {
             let x2 = x2.clamp(0.0, max_x);
             let y2 = y2.clamp(0.0, max_y);
             if x2 <= x1 || y2 <= y1 {
+                clipped_out += 1;
                 continue;
             }
 
@@ -173,6 +188,23 @@ impl YuNetDetector {
                 break;
             }
         }
+        tracing::trace!(
+            target: "attent_model::detector",
+            frame_sequence = output.frame_sequence,
+            candidate_cells = STRIDES.iter().map(|stride| (side / stride).pow(2)).sum::<usize>(),
+            below_threshold,
+            invalid_head_scores,
+            invalid_boxes,
+            invalid_landmarks,
+            candidates_before_top_k,
+            candidates_after_top_k = candidates_before_top_k.min(self.config.top_k),
+            nms_suppressed,
+            clipped_out,
+            faces = faces.len(),
+            score_threshold = self.config.score_threshold,
+            nms_threshold = self.config.nms_threshold,
+            "YuNet candidate filtering and NMS summary"
+        );
         Ok(faces)
     }
 }
