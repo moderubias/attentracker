@@ -291,14 +291,29 @@ fn observe(
         return Ok(());
     }
 
+    info!(
+        target: "attent_core::lifecycle",
+        "initializing YuNet and camera"
+    );
+    let load_started = Instant::now();
     let model = YuNetModel::load(&config.model_path)
         .with_context(|| format!("loading YuNet at {}", config.model_path.display()))?;
+    let model_load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
     let detector = YuNetDetector::new(DetectorConfig::default())?;
 
     let preferred = CameraFormat::new(Resolution::new(640, 480), FrameFormat::MJPEG, 30);
+    let camera_open_started = Instant::now();
     let mut camera =
         AttentCamera::new_preferred(CameraIndex::Index(config.camera_index), preferred)
             .context("opening capture device")?;
+    info!(
+        target: "attent_core::lifecycle",
+        model_load_ms,
+        camera_open_ms = camera_open_started.elapsed().as_secs_f64() * 1000.0,
+        camera_format = ?camera.format(),
+        target_interval_ms = config.sample_interval.as_millis(),
+        "monitor initialized"
+    );
 
     {
         let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
@@ -310,6 +325,7 @@ fn observe(
 
     let mut previous_sample_start: Option<Instant> = None;
     let mut last_preview_at: Option<Instant> = None;
+    let mut stats = DiagnosticsWindow::new();
     loop {
         // A stop request can arrive while the model/device is initializing.
         match stop_rx.try_recv() {
@@ -349,6 +365,13 @@ fn observe(
             let preview_started = Instant::now();
             match encode_preview(&frame, &faces) {
                 Ok(preview) => {
+                    trace!(
+                        target: "attent_core::preview",
+                        sequence = preview.sequence,
+                        encoded_bytes = preview.data_url.len(),
+                        overlays = preview.faces.len(),
+                        "JPEG preview encoded"
+                    );
                     // Publish under the same lock used by opt-out; hiding the
                     // preview cannot race with publication of a later frame.
                     let mut slot = shared_preview.lock().unwrap_or_else(|p| p.into_inner());
@@ -356,7 +379,14 @@ fn observe(
                         *slot = Some(preview);
                     }
                 }
-                Err(err) => preview_error = Some(err.to_string()),
+                Err(err) => {
+                    warn!(
+                        target: "attent_core::preview",
+                        error = %err,
+                        "JPEG preview encoding failed"
+                    );
+                    preview_error = Some(err.to_string());
+                },
             }
             preview_ms = Some(preview_started.elapsed().as_secs_f64() * 1000.0);
             last_preview_at = Some(Instant::now());
@@ -388,12 +418,48 @@ fn observe(
 
         // An interval of zero intentionally disables the artificial delay.
         // Inference still runs sequentially: this does not promise camera FPS.
+        let iteration_ms = begun.elapsed().as_secs_f64() * 1000.0;
         let remaining = config.sample_interval.saturating_sub(begun.elapsed());
+        let planned_sleep_ms = remaining.as_secs_f64() * 1000.0;
+        let timings = FrameTimings {
+            capture_ms: frame.meta.capture_duration.as_secs_f64() * 1000.0,
+            decode_ms: frame.meta.decode_duration.as_secs_f64() * 1000.0,
+            preprocess_ms,
+            inference_ms,
+            postprocess_ms,
+            preview_ms: preview_ms.unwrap_or(0.0),
+            pipeline_ms: analysis_ms,
+            iteration_ms,
+            period_ms,
+            planned_sleep_ms,
+        };
+
+        debug!(
+            target: "attent_core::pipeline",
+            event = "frame",
+            sequence = frame.meta.sequence,
+            faces = faces.len(),
+            capture_ms = timings.capture_ms,
+            decode_ms = timings.decode_ms,
+            preprocess_ms = timings.preprocess_ms,
+            inference_ms = timings.inference_ms,
+            postprocess_ms = timings.postprocess_ms,
+            preview_ms = timings.preview_ms,
+            pipeline_ms = timings.pipeline_ms,
+            iteration_ms = timings.iteration_ms,
+            observed_period_ms = timings.period_ms.unwrap_or(0.0),
+            planned_sleep_ms,
+            target_interval_ms = config.sample_interval.as_millis(),
+            "completed sampled frame"
+        );
+        stats.record(timings);
+        stats.report_if_due(config.sample_interval.as_millis(), preview_enabled.load(Ordering::Relaxed));
         match stop_rx.recv_timeout(remaining) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
+    stats.report("stopped", config.sample_interval.as_millis(), preview_enabled.load(Ordering::Relaxed));
     Ok(())
 }
 
