@@ -53,31 +53,32 @@ impl ActivityClassifier {
                 ActivityState::Unknown
             }
             Some(0) => {
-                self.present_since = None;
                 let absent_since = *self.absent_since.get_or_insert(now);
                 let elapsed = now.saturating_duration_since(absent_since);
                 if elapsed >= AWAY_AFTER {
+                    self.present_since = None;
                     ActivityState::Away
                 } else if elapsed < FACE_LOSS_GRACE {
-                    // Suppress individual missed detections without claiming a
-                    // fresh input event or resetting a sustained Away state.
+                    // Keep previous face confirmation through a brief miss.
+                    // This prevents Working -> Unknown -> Working flicker.
                     self.state
                 } else {
+                    self.present_since = None;
                     ActivityState::Unknown
                 }
             }
             Some(1) => {
-                self.absent_since = None;
                 let present_since = *self.present_since.get_or_insert(now);
                 if now.saturating_duration_since(present_since) < FACE_CONFIRM {
-                    // In particular, a one-frame false positive must not
-                    // change Away into Working.
+                    // Preserve Away until a face has been present long enough;
+                    // one false positive must not reset the absence timer.
                     if self.state == ActivityState::Away {
                         ActivityState::Away
                     } else {
                         ActivityState::Unknown
                     }
                 } else {
+                    self.absent_since = None;
                     match input.idle_for {
                         Some(age) if age >= IDLING_AFTER => ActivityState::Idling,
                         Some(age) if age <= RECENT_INPUT => ActivityState::Working,
@@ -123,7 +124,7 @@ mod tests {
         assert_eq!(c.observe(at, Some(1), idle(0)), ActivityState::Unknown);
         assert_eq!(c.observe(at + Duration::from_millis(500), Some(1), idle(0)), ActivityState::Working);
         assert_eq!(c.observe(at + Duration::from_millis(550), Some(0), idle(0)), ActivityState::Working);
-        assert_eq!(c.observe(at + Duration::from_millis(650), Some(1), idle(0)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(650), Some(1), idle(0)), ActivityState::Working);
         assert_eq!(c.observe(at + Duration::from_millis(1100), Some(1), idle(0)), ActivityState::Working);
     }
 
