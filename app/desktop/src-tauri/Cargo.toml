@@ -16,7 +16,28 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 tauri = { version = "2", features = [] }
 attent-core = { path = "../../../crates/attent-core" }
 
-# Optimize inference dependencies while preserving fast UI dev rebuilds.
-# The first optimized build can be slower and use more disk space.
-[profile.dev.package."*"]
+# Only optimize the hot CV crates in dev mode. Avoid recompiling the
+# entire Tauri/GTK dependency graph with extra optimization on weak laptops.
+[profile.dev.package.attent-camera]
+opt-level = 2
+
+[profile.dev.package.attent-model]
+opt-level = 2
+
+[profile.dev.package.attent-core]
+opt-level = 2
+
+[profile.dev.package.tract-core]
+opt-level = 2
+
+[profile.dev.package.tract-data]
+opt-level = 2
+
+[profile.dev.package.tract-linalg]
+opt-level = 2
+
+[profile.dev.package.tract-hir]
+opt-level = 2
+
+[profile.dev.package.tract-onnx]
 opt-level = 2
