@@ -99,13 +99,28 @@ RUST_LOG='warn,attentracker_desktop=info,attent_core=info,attent_camera=info,att
   2>&1 | tee "$HOME/attentracker-release-benchmark.log"
 ```
 
-The model is **not yet bundled**: for this developer benchmark set
-`ATTENT_MODEL_PATH` to the separately downloaded
-`models/yunet-dynamic.onnx` file. The bundled, fixed-640
+The models are **not yet bundled** for public release. For this developer
+benchmark set `ATTENT_MODEL_PATH` to the separately downloaded
+`models/yunet-dynamic.onnx` file. The original fixed-640
 `models/yunet.onnx` cannot be made into a 160/320 input graph by
 changing just the Tract input fact; its internal shapes remain fixed
 at 640. The verified dynamic-input `2026may` variant is published by
 OpenCV Zoo under the YuNet model's MIT license.
+
+**640px performance regression:** on the reference i3, the dynamic 640
+variant required approximately 2.07 s per inference (0.43 analyzed FPS),
+compared with approximately 160 ms in the original fixed 640 graph
+(5.70 FPS). The app therefore automatically prefers the **sibling
+`yunet.onnx` file for 640**, if `ATTENT_MODEL_PATH` names
+`yunet-dynamic.onnx` and the fixed file is present. 160 and 320 keep
+the dynamic model. This automatic selection applies after rebuilding
+from this branch, and the chosen model path is included in startup
+logs. A custom model filename is never overridden.
+
+To reproduce the fixed model's 640 result with an **older binary** (no
+rebuild), close the app and relaunch it with:
+`ATTENT_MODEL_PATH="$PWD/models/yunet.onnx"`, then choose 640 in
+the UI. Restore the dynamic path for the 160/320 tests.
 
 `scripts/fetch-yunet-dynamic.sh` downloads the actual Git LFS object
 from OpenCV's repository and checks the pinned SHA-256. Do not use the
