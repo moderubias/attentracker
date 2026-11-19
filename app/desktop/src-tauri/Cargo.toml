@@ -16,6 +16,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 tauri = { version = "2", features = [] }
 attent-core = { path = "../../../crates/attent-core" }
 tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 # Only optimize the hot CV crates in dev mode. Avoid recompiling the
