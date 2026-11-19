@@ -13,7 +13,9 @@ fn main() {
         panic!("cannot open source icon {}: {err}", source.display())
     });
     // Preserve the intended square icon shape at a fixed, Tauri-compatible size.
-    let icon = image.resize_to_fill(512, 512, FilterType::Lanczos3);
+    // Tauri's generated context requires an RGBA PNG, not the RGB PNG
+    // produced by saving a JPEG-derived DynamicImage directly.
+    let icon = image.resize_to_fill(512, 512, FilterType::Lanczos3).to_rgba8();
 
     fs::create_dir_all(destination.parent().expect("icon destination has parent"))
         .expect("cannot create the Tauri icon directory");
