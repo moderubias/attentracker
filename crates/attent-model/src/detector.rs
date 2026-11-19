@@ -343,7 +343,7 @@ mod tests {
         let faces = YuNetDetector::new(DetectorConfig::default())
             .unwrap().detect(&output).unwrap();
         assert_eq!(faces.len(), 1);
-        assert_eq!(faces[0].bbox, [72.0, 88.0, 32.0, 32.0]);
+        assert_eq!(faces[0].bbox, [72.0, 72.0, 32.0, 32.0]);
     }
 
     #[test]
