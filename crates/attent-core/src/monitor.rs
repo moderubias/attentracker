@@ -16,7 +16,7 @@ use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, Resolution};
 use serde::Serialize;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::diagnostics::{DiagnosticsWindow, FrameTimings};
+use crate::diagnostics::{DiagnosticsWindow, FrameTimings, scheduler_gap_ms};
 use crate::preview::{FramePreview, encode_preview};
 
 const MODEL_SIDE: u32 = 640;
@@ -326,6 +326,7 @@ fn observe(
     let mut previous_sample_start: Option<Instant> = None;
     let mut last_preview_at: Option<Instant> = None;
     let mut stats = DiagnosticsWindow::new();
+    let mut previous_cycle: Option<(f64, f64)> = None;
     loop {
         // A stop request can arrive while the model/device is initializing.
         match stop_rx.try_recv() {
@@ -421,6 +422,8 @@ fn observe(
         let iteration_ms = begun.elapsed().as_secs_f64() * 1000.0;
         let remaining = config.sample_interval.saturating_sub(begun.elapsed());
         let planned_sleep_ms = remaining.as_secs_f64() * 1000.0;
+        let scheduler_gap_ms = scheduler_gap_ms(period_ms, previous_cycle);
+        previous_cycle = Some((iteration_ms, planned_sleep_ms));
         let timings = FrameTimings {
             capture_ms: frame.meta.capture_duration.as_secs_f64() * 1000.0,
             decode_ms: frame.meta.decode_duration.as_secs_f64() * 1000.0,
@@ -432,6 +435,7 @@ fn observe(
             iteration_ms,
             period_ms,
             planned_sleep_ms,
+            scheduler_gap_ms,
         };
 
         debug!(
@@ -449,6 +453,7 @@ fn observe(
             iteration_ms = timings.iteration_ms,
             observed_period_ms = timings.period_ms.unwrap_or(0.0),
             planned_sleep_ms,
+            scheduler_gap_ms = timings.scheduler_gap_ms.unwrap_or(0.0),
             target_interval_ms = config.sample_interval.as_millis(),
             "completed sampled frame"
         );
