@@ -1,0 +1,33 @@
+:root {
+  font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-synthesis: none;
+  color: #262b29;
+  background: #f6f5f1;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 340px; }
+button, input { font: inherit; }
+button { cursor: pointer; border: 1px solid #d7dcd6; border-radius: 12px; padding: 11px 18px; background: white; color: #26342c; }
+button:hover:enabled { background: #f0f3ed; }
+button:disabled { cursor: not-allowed; opacity: .48; }
+button.primary { background: #274d3a; color: white; border-color: #274d3a; }
+button.primary:hover:enabled { background: #38644b; }
+main { max-width: 1080px; margin: 0 auto; padding: 44px 32px 64px; }
+header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 36px; gap: 20px; }
+h1 { font-size: 37px; font-weight: 650; letter-spacing: -.05em; margin: 0 0 8px; }
+h2 { font-size: 17px; font-weight: 650; margin: 0 0 16px; }
+p { margin: 0; }
+.subhead { color: #7a827b; font-size: 14px; }
+.eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .18em; font-weight: 700; color: #78887c; margin-bottom: 10px; }
+.pill { font-size: 12px; padding: 8px 12px; border-radius: 99px; background: #ebeee9; color: #435c4d; white-space: nowrap; text-transform: capitalize; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 16px; }
+.card { background: #fff; border: 1px solid #e2e7e0; border-radius: 20px; padding: 24px; box-shadow: 0 7px 24px #26392b06; }
+.metric { font-size: 32px; font-weight: 650; letter-spacing: -.05em; margin-top: 10px; font-variant-numeric: tabular-nums; }
+.metric.small { font-size: 25px; }
+.muted { font-size: 12px; color: #879188; margin-top: 7px; }
+.actions { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-top: 18px; }
+.field { display: flex; gap: 7px; flex-direction: column; min-width: 148px; font-size: 12px; color: #626c62; }
+.field input { background: white; border: 1px solid #d7dcd6; border-radius: 12px; padding: 11px; width: 145px; }
+.notice { background: #f0f1ec; border-radius: 14px; padding: 14px 18px; font-size: 12px; line-height: 1.6; color: #596359; margin-top: 18px; }
+.error { background: #fff0ec; color: #943f32; padding: 14px 18px; border-radius: 12px; margin-top: 12px; word-break: break-word; }
+@media (max-width: 730px) { main { padding: 28px 16px; } .cards { grid-template-columns: 1fr; } h1 { font-size: 31px; } }
