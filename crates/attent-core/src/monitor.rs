@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use attent_activity::{ActivityClassifier, ActivityState, InputEvidence};
+use attent_activity::{ActivityClassifier, ActivityState, InputEvidence, InputIdleMonitor};
 use attent_camera::prepare_yunet;
 use attent_model::{DetectorConfig, YuNetDetector, YuNetModel};
 use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, Resolution};
@@ -371,6 +371,9 @@ fn observe(
     let mut last_analyzed_sequence = 0_u64;
     let mut stats = DiagnosticsWindow::new();
     let mut classifier = ActivityClassifier::new();
+    // Start only after the user pressed Start. Drop stops the input observer
+    // promptly and no keystrokes, coordinates or content are accessed.
+    let input_observer = InputIdleMonitor::start();
     let mut previous_cycle: Option<(f64, f64)> = None;
     loop {
         // Wake periodically to honor Stop even if the camera is not delivering.
@@ -432,7 +435,7 @@ fn observe(
         let activity_state = classifier.observe(
             Instant::now(),
             Some(faces.len()),
-            InputEvidence::default(), // No OS input probe yet: honest Unknown/possible Away only.
+            InputEvidence { idle_for: input_observer.idle_for() },
         );
         let analysis_ms = begun.elapsed().as_secs_f64() * 1000.0;
 
@@ -455,6 +458,7 @@ fn observe(
             state.frames_analyzed = state.frames_analyzed.saturating_add(1);
             state.presence = Presence::from_count(faces.len());
             state.activity_state = activity_state;
+            state.input_source = input_observer.source().map(str::to_owned);
             state.face_count = Some(faces.len());
             state.best_confidence = faces.first().map(|f| f.confidence);
             state.last_observed_at_ms = frame
