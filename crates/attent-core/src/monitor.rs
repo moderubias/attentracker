@@ -627,6 +627,16 @@ mod tests {
     }
 
     #[test]
+    fn stop_revokes_preview_even_when_no_worker_is_active() {
+        let monitor = Monitor::new();
+        monitor.set_preview_enabled(true);
+        assert!(monitor.preview_enabled.load(Ordering::Acquire));
+        monitor.stop().unwrap();
+        assert!(!monitor.preview_enabled.load(Ordering::Acquire));
+        assert!(monitor.preview(0).is_none());
+    }
+
+    #[test]
     fn snapshot_initially_has_unknown_presence() {
         let monitor = Monitor::new();
         let s = monitor.snapshot();
