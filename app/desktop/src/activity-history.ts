@@ -1,11 +1,11 @@
-export type TrackedState = "working" | "idling" | "away" | "unknown";
+export type TrackedState = "active_working" | "working" | "multiple_faces_present" | "idling" | "away" | "unknown";
 export type Presence = "unknown" | "no_face" | "face_present" | "multiple_faces";
 export interface ActivitySample { at: number; state: TrackedState; presence: Presence }
-export const STATES = ["working", "idling", "away", "unknown"] as const;
+export const STATES = ["active_working", "working", "multiple_faces_present", "idling", "away", "unknown"] as const;
 export const MAX_GAP_MS = 1500;
 export type Durations = Record<TrackedState, number>;
 export interface Summary { bins: Durations[]; totals: Durations; observedMs: number; binMs: number }
-const empty = (): Durations => ({ working: 0, idling: 0, away: 0, unknown: 0 });
+const empty = (): Durations => ({ active_working: 0, working: 0, multiple_faces_present: 0, idling: 0, away: 0, unknown: 0 });
 
 /** Only adjacent, fresh observations contribute time; no extrapolation of the last sample. */
 export function summarizeHistory(samples: readonly ActivitySample[], minutes: number, now: number): Summary {

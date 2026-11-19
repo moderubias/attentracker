@@ -6,7 +6,7 @@
 
   type Phase = "stopped" | "starting" | "running" | "stopping" | "error";
   type Presence = "unknown" | "no_face" | "face_present" | "multiple_faces";
-  type ActivityState = "unknown" | "working" | "idling" | "away";
+  type ActivityState = "unknown" | "active_working" | "working" | "multiple_faces_present" | "idling" | "away";
   type Snapshot = {
     phase: Phase;
     presence: Presence;
@@ -108,7 +108,9 @@
 
   const activityLabels: Record<ActivityState, string> = {
     unknown: "Insufficient evidence",
-    working: "Possible working · recent input",
+    active_working: "Recent computer input · possible active work",
+    working: "Possible work · brief input pause",
+    multiple_faces_present: "Multiple faces observed",
     idling: "Possible idling · no recent input",
     away: "Possibly away · no face for 8 s"
   };
@@ -403,13 +405,13 @@
       </div>
 
       <div class="observed-state">
-        <div class="state-indicator" class:detected={snapshot.activityState === "working"}></div>
+        <div class="state-indicator" class:detected={snapshot.activityState === "working" || snapshot.activityState === "active_working"}></div>
         <div>
           <p class="small-label">Estimated state · provisional</p>
           <p class="state-name">{activityLabels[snapshot.activityState]}</p>
         </div>
       </div>
-      <p class="aside-note">Camera: {states[snapshot.presence]}. Input evidence: {snapshot.inputSource ?? "unavailable"}. Activity is not productivity; Working and Idling require an OS input source.</p>
+      <p class="aside-note">Camera: {states[snapshot.presence]}. Input evidence: {snapshot.inputSource ?? "unavailable"}. Activity is not productivity; ActiveWorking, Working and Idling require an OS input source. Multiple faces report only an observed count.</p>
 
       <div class="config-fields">
         <label>Camera index

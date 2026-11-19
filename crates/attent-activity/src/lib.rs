@@ -1,7 +1,7 @@
 //! Conservative temporal interpretation of observable evidence.
 //!
 //! A face is not proof of identity or productivity. `Working` is a provisional
-//! correlation of one consistently visible face and recent OS input activity.
+//! correlation of one consistently visible face and OS input recency.
 //! Face detection can miss individual frames, so changes are debounced.
 
 use std::time::{Duration, Instant};
@@ -25,7 +25,9 @@ const WORKING_EXIT_IDLE: Duration = Duration::from_secs(5);
 pub enum ActivityState {
     #[default]
     Unknown,
+    ActiveWorking,
     Working,
+    MultipleFacesPresent,
     Idling,
     Away,
 }
@@ -64,9 +66,10 @@ impl ActivityClassifier {
                 if elapsed >= AWAY_AFTER {
                     self.present_since = None;
                     ActivityState::Away
-                } else if elapsed < FACE_LOSS_GRACE {
-                    // Keep previous face confirmation through a brief miss.
-                    // This prevents Working -> Unknown -> Working flicker.
+                } else if elapsed < FACE_LOSS_GRACE
+                    && self.state != ActivityState::MultipleFacesPresent
+                {
+                    // Brief single-face misses do not cause spurious state changes.
                     self.state
                 } else {
                     self.present_since = None;
@@ -87,9 +90,12 @@ impl ActivityClassifier {
                     self.absent_since = None;
                     match input.idle_for {
                         Some(age) if age >= IDLING_AFTER => ActivityState::Idling,
-                        Some(age) if age <= RECENT_INPUT => ActivityState::Working,
+                        // "Active" means fresh OS input evidence, not verified productivity.
+                        Some(age) if age <= RECENT_INPUT => ActivityState::ActiveWorking,
+                        // A short pause after fresh input is still a provisional Working state.
                         Some(age)
-                            if self.state == ActivityState::Working && age < WORKING_EXIT_IDLE =>
+                            if matches!(self.state, ActivityState::ActiveWorking | ActivityState::Working)
+                                && age < WORKING_EXIT_IDLE =>
                         {
                             ActivityState::Working
                         }
@@ -98,11 +104,11 @@ impl ActivityClassifier {
                 }
             }
             Some(_) => {
-                // Multiple people are ambiguous; previous single-face
-                // confidence does not carry across this observation.
+                // Count is observed, but identity and intent remain unknown.
+                // Previous single-face input confidence must not carry over.
                 self.absent_since = None;
                 self.present_since = None;
-                ActivityState::Unknown
+                ActivityState::MultipleFacesPresent
             }
         };
         self.state = next;
@@ -114,119 +120,111 @@ impl ActivityClassifier {
 mod tests {
     use super::*;
 
-    fn idle(seconds: u64) -> InputEvidence {
+    fn idle_s(seconds: u64) -> InputEvidence {
         InputEvidence { idle_for: Some(Duration::from_secs(seconds)) }
+    }
+    fn idle_ms(ms: u64) -> InputEvidence {
+        InputEvidence { idle_for: Some(Duration::from_millis(ms)) }
     }
 
     #[test]
     fn away_requires_eight_seconds_without_face() {
         let at = Instant::now();
         let mut c = ActivityClassifier::new();
-        let none = InputEvidence::default();
-        assert_eq!(c.observe(at, Some(0), none), ActivityState::Unknown);
-        assert_eq!(c.observe(at + Duration::from_secs(7), Some(0), none), ActivityState::Unknown);
-        assert_eq!(c.observe(at + Duration::from_secs(8), Some(0), none), ActivityState::Away);
+        let missing = InputEvidence::default();
+        assert_eq!(c.observe(at, Some(0), missing), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_secs(7), Some(0), missing), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_secs(8), Some(0), missing), ActivityState::Away);
     }
 
     #[test]
-    fn one_missed_frame_does_not_flicker_working_to_unknown() {
+    fn active_working_requires_confirmed_face_and_fresh_input() {
         let at = Instant::now();
         let mut c = ActivityClassifier::new();
-        assert_eq!(c.observe(at, Some(1), idle(0)), ActivityState::Unknown);
-        assert_eq!(c.observe(at + Duration::from_millis(500), Some(1), idle(0)), ActivityState::Working);
-        assert_eq!(c.observe(at + Duration::from_millis(550), Some(0), idle(0)), ActivityState::Working);
-        assert_eq!(c.observe(at + Duration::from_millis(650), Some(1), idle(0)), ActivityState::Working);
-        assert_eq!(c.observe(at + Duration::from_millis(1100), Some(1), idle(0)), ActivityState::Working);
+        assert_eq!(c.observe(at, Some(1), idle_ms(0)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(500), Some(1), idle_ms(900)), ActivityState::ActiveWorking);
+        assert_eq!(c.observe(at + Duration::from_millis(600), Some(1), idle_ms(901)), ActivityState::Working);
+        assert_eq!(c.observe(at + Duration::from_millis(650), Some(1), idle_s(5)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(700), Some(1), idle_s(1)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(800), Some(1), idle_ms(0)), ActivityState::ActiveWorking);
     }
 
     #[test]
-    fn persistent_face_loss_moves_to_unknown_then_away() {
+    fn brief_missed_face_preserves_state_but_prolonged_loss_does_not() {
         let at = Instant::now();
         let mut c = ActivityClassifier::new();
-        c.observe(at, Some(1), idle(0));
-        c.observe(at + Duration::from_millis(500), Some(1), idle(0));
-        assert_eq!(c.observe(at + Duration::from_secs(1), Some(0), idle(1)), ActivityState::Working);
-        assert_eq!(c.observe(at + Duration::from_secs(2), Some(0), idle(2)), ActivityState::Unknown);
-        assert_eq!(c.observe(at + Duration::from_secs(9), Some(0), idle(9)), ActivityState::Away);
+        c.observe(at, Some(1), idle_s(0));
+        assert_eq!(c.observe(at + Duration::from_millis(500), Some(1), idle_s(0)), ActivityState::ActiveWorking);
+        assert_eq!(c.observe(at + Duration::from_millis(550), Some(0), idle_s(0)), ActivityState::ActiveWorking);
+        assert_eq!(c.observe(at + Duration::from_millis(650), Some(1), idle_s(0)), ActivityState::ActiveWorking);
+        assert_eq!(c.observe(at + Duration::from_secs(1), Some(0), idle_s(1)), ActivityState::ActiveWorking);
+        assert_eq!(c.observe(at + Duration::from_secs(2), Some(0), idle_s(2)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_secs(9), Some(0), idle_s(9)), ActivityState::Away);
     }
 
     #[test]
     fn brief_false_face_does_not_cancel_away() {
         let at = Instant::now();
         let mut c = ActivityClassifier::new();
-        let none = InputEvidence::default();
-        c.observe(at, Some(0), none);
-        assert_eq!(c.observe(at + Duration::from_secs(8), Some(0), none), ActivityState::Away);
-        assert_eq!(c.observe(at + Duration::from_secs(9), Some(1), idle(0)), ActivityState::Away);
-        assert_eq!(c.observe(at + Duration::from_secs(9) + Duration::from_millis(100), Some(0), idle(0)), ActivityState::Away);
-        assert_eq!(c.observe(at + Duration::from_secs(10), Some(1), idle(0)), ActivityState::Away);
-        assert_eq!(c.observe(at + Duration::from_secs(10) + Duration::from_millis(500), Some(1), idle(0)), ActivityState::Working);
+        let missing = InputEvidence::default();
+        c.observe(at, Some(0), missing);
+        assert_eq!(c.observe(at + Duration::from_secs(8), Some(0), missing), ActivityState::Away);
+        assert_eq!(c.observe(at + Duration::from_secs(9), Some(1), idle_s(0)), ActivityState::Away);
+        assert_eq!(c.observe(at + Duration::from_secs(9) + Duration::from_millis(100), Some(0), idle_s(0)), ActivityState::Away);
+        assert_eq!(c.observe(at + Duration::from_secs(10), Some(1), idle_s(0)), ActivityState::Away);
+        assert_eq!(c.observe(at + Duration::from_secs(10) + Duration::from_millis(500), Some(1), idle_s(0)), ActivityState::ActiveWorking);
     }
 
     #[test]
-    fn returning_after_ten_seconds_idle_is_not_working() {
+    fn multiple_faces_is_observation_not_work_inference() {
+        let at = Instant::now();
+        let mut c = ActivityClassifier::new();
+        c.observe(at, Some(1), idle_s(0));
+        c.observe(at + Duration::from_millis(500), Some(1), idle_s(0));
+        assert_eq!(c.observe(at + Duration::from_millis(600), Some(2), idle_s(0)), ActivityState::MultipleFacesPresent);
+        assert_eq!(c.observe(at + Duration::from_millis(700), Some(0), idle_s(0)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(800), Some(1), idle_s(0)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(1300), Some(1), idle_s(0)), ActivityState::ActiveWorking);
+        assert_eq!(c.observe(at + Duration::from_millis(1400), Some(3), InputEvidence::default()), ActivityState::MultipleFacesPresent);
+    }
+
+    #[test]
+    fn returning_after_eleven_seconds_idle_is_not_working() {
         let at = Instant::now();
         let mut c = ActivityClassifier::new();
         c.observe(at, Some(0), InputEvidence::default());
-        c.observe(at + Duration::from_secs(8), Some(0), idle(10));
-        assert_eq!(c.observe(at + Duration::from_secs(9), Some(1), idle(11)), ActivityState::Away);
-        assert_eq!(c.observe(at + Duration::from_secs(9) + Duration::from_millis(500), Some(1), idle(11)), ActivityState::Unknown);
+        c.observe(at + Duration::from_secs(8), Some(0), idle_s(10));
+        assert_eq!(c.observe(at + Duration::from_secs(9), Some(1), idle_s(11)), ActivityState::Away);
+        assert_eq!(c.observe(at + Duration::from_secs(9) + Duration::from_millis(500), Some(1), idle_s(11)), ActivityState::Unknown);
     }
 
     #[test]
-    fn working_hysteresis_does_not_invent_new_input() {
-        let start = Instant::now();
+    fn working_hysteresis_does_not_invent_recent_input() {
+        let at = Instant::now();
         let mut c = ActivityClassifier::new();
-        c.observe(start, Some(1), idle(0));
-        assert_eq!(
-            c.observe(start + Duration::from_millis(500), Some(1), idle(0)),
-            ActivityState::Working
-        );
-        // Every one-second "Idled" event is no longer an activity edge.
-        assert_eq!(
-            c.observe(start + Duration::from_secs(2), Some(1), idle(1)),
-            ActivityState::Working
-        );
-        assert_eq!(
-            c.observe(start + Duration::from_secs(3), Some(1), idle(4)),
-            ActivityState::Working
-        );
-        assert_eq!(
-            c.observe(start + Duration::from_secs(4), Some(1), idle(5)),
-            ActivityState::Unknown
-        );
-        // Once Unknown, a four-second idle reading cannot re-enter Working.
-        assert_eq!(
-            c.observe(start + Duration::from_secs(5), Some(1), idle(4)),
-            ActivityState::Unknown
-        );
-        assert_eq!(
-            c.observe(start + Duration::from_secs(6), Some(1), idle(0)),
-            ActivityState::Working
-        );
-        // Missing input evidence must not silently prolong Working.
-        assert_eq!(
-            c.observe(start + Duration::from_secs(7), Some(1), InputEvidence::default()),
-            ActivityState::Unknown
-        );
-        assert_eq!(
-            c.observe(start + Duration::from_secs(68), Some(1), idle(60)),
-            ActivityState::Idling
-        );
+        c.observe(at, Some(1), idle_s(0));
+        assert_eq!(c.observe(at + Duration::from_millis(500), Some(1), idle_s(0)), ActivityState::ActiveWorking);
+        assert_eq!(c.observe(at + Duration::from_secs(2), Some(1), idle_s(1)), ActivityState::Working);
+        assert_eq!(c.observe(at + Duration::from_secs(3), Some(1), idle_s(4)), ActivityState::Working);
+        assert_eq!(c.observe(at + Duration::from_secs(4), Some(1), idle_s(5)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_secs(5), Some(1), idle_s(4)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_secs(6), Some(1), idle_s(0)), ActivityState::ActiveWorking);
+        assert_eq!(c.observe(at + Duration::from_secs(7), Some(1), InputEvidence::default()), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_secs(68), Some(1), idle_s(60)), ActivityState::Idling);
     }
 
     #[test]
-    fn working_and_idling_require_explicit_os_evidence() {
+    fn input_states_require_os_evidence_and_camera_observation() {
         let at = Instant::now();
         let mut c = ActivityClassifier::new();
         c.observe(at, Some(1), InputEvidence::default());
         assert_eq!(c.observe(at + Duration::from_millis(500), Some(1), InputEvidence::default()), ActivityState::Unknown);
-        assert_eq!(c.observe(at + Duration::from_millis(600), Some(1), idle(0)), ActivityState::Working);
-        assert_eq!(c.observe(at + Duration::from_millis(700), Some(1), idle(1)), ActivityState::Working);
-        assert_eq!(c.observe(at + Duration::from_millis(750), Some(1), idle(10)), ActivityState::Unknown);
-        assert_eq!(c.observe(at + Duration::from_millis(800), Some(1), idle(60)), ActivityState::Idling);
-        assert_eq!(c.observe(at + Duration::from_millis(900), Some(2), idle(0)), ActivityState::Unknown);
-        assert_eq!(c.observe(at + Duration::from_millis(1000), None, idle(0)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(600), Some(1), idle_s(0)), ActivityState::ActiveWorking);
+        assert_eq!(c.observe(at + Duration::from_millis(700), Some(1), idle_s(1)), ActivityState::Working);
+        assert_eq!(c.observe(at + Duration::from_millis(750), Some(1), idle_s(10)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(800), Some(1), idle_s(60)), ActivityState::Idling);
+        assert_eq!(c.observe(at + Duration::from_millis(900), Some(2), idle_s(0)), ActivityState::MultipleFacesPresent);
+        assert_eq!(c.observe(at + Duration::from_millis(1000), None, idle_s(0)), ActivityState::Unknown);
     }
 }
 

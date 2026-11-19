@@ -2,6 +2,8 @@
 
 The session timeline uses only numeric monitor snapshots. It does not assess
 productivity, detect phones, process audio, or store permanent history.
+The Rust classifier additionally exposes ActiveWorking for fresh OS input and
+MultipleFacesPresent for a raw observed count (not an inference about intent).
 
 - At most 60 minutes of activity state, timestamp, and presence category are
   held in frontend memory. They are cleared on the next Start or page reload.

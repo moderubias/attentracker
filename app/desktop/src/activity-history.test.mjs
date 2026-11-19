@@ -25,3 +25,10 @@ test("separate states and explicit CSV", () => {
   assert.match(csv, /^timestamp,activity_state,presence\r\n/);
   assert.match(csv, /,away,face_present/);
 });
+
+test("new observational states are independent in timeline", () => {
+  const entries = [sample(100, "active_working"), sample(500, "multiple_faces_present"), sample(900)];
+  const result = summarizeHistory(entries, 1, 1000);
+  assert.equal(result.totals.active_working, 400);
+  assert.equal(result.totals.multiple_faces_present, 400);
+});

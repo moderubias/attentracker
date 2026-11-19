@@ -30,21 +30,23 @@ decoupling camera capture; do not assume equivalent FPS until benchmarked.
 
 | State | Evidence | Interpretation |
 | --- | --- | --- |
-| `Unknown` | Missing/ambiguous signals; multiple faces; no recent OS input evidence | Insufficient evidence |
+| `Unknown` | Missing/ambiguous signals; no recent OS input evidence | Insufficient evidence |
 | `Away` | No face detected continuously for >=8 seconds | Possibly away, not proof of absence |
-| `Working` | One face and OS input observed within the recent-activity threshold | Possible computer activity, not productivity |
+| `ActiveWorking` | One confirmed face and input idle <=0.9 s | Fresh computer input, not evidence of productivity |
+| `Working` | One face, a preceding ActiveWorking/Working state, and input idle <5 s | Brief pause after input, not verified work |
+| `MultipleFacesPresent` | Two or more faces detected in the latest frame | Observed count, not identity or conversation |
 | `Idling` | One face and OS input idle for >=60 seconds | Possible computer idling |
 
-The activity classifier applies separate entry/exit thresholds: `Working`
-needs a confirmed face plus input-idle evidence below **0.9 seconds** to
-start; once active it persists through brief input gaps until idle reaches
+The activity classifier applies separate entry/exit thresholds: `ActiveWorking`
+needs a confirmed face plus input-idle evidence no older than **0.9 seconds**
+to start; then `Working` represents a short gap until idle reaches
 **5 seconds**. That is intentionally asymmetric to suppress flicker caused
 by Wayland's 1-second `Idled` notifications. The classifier still moves
 to `Unknown` immediately if OS input evidence becomes unavailable, and
 to `Idling` at 60 seconds with a confirmed face. A brief loss of face
 evidence is separately tolerated for 750 ms.
 
-The `Working` state requires an **actual OS input-idle signal**. On Linux
+The `ActiveWorking`, `Working`, and `Idling` states require an **actual OS input-idle signal**. On Linux
 Wayland, the worker attempts to connect to
 `ext-idle-notify-v1` **version 2** and use
 `get_input_idle_notification`; this reports only `idled` and `resumed`
@@ -55,7 +57,7 @@ observer is dropped on Stop, Error or process exit.
 
 If the compositor does not support version 2, or under an unsupported OS,
 the input evidence is unavailable; the UI must report this truthfully.
-`Working` and `Idling` will not be inferred. The face-only `Away`
+`ActiveWorking`, `Working` and `Idling` will not be inferred. The face-only `Away`
 heuristic can still operate. The camera does not identify *which* person
 is visible, and the system must not claim such identification.
 
@@ -142,7 +144,7 @@ app still uses the original fixed model at 640 when it is available.
    activity. Continuous user activity with ~1-second gaps should not
    alternate `Working`/`Unknown` on every idle notification.
    Then leave input untouched for >=60 s while visible.
-   The UI should show provisional `Working` and `Idling`
+   The UI should show provisional `ActiveWorking`, `Working`, and `Idling`
    appropriately. Do not use automated synthetic input.
 7. Toggle Stop/Start repeatedly and verify the app opens the camera
    exactly once per session and no preview frames from an old session

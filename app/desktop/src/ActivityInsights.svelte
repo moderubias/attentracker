@@ -20,7 +20,8 @@
   let lastFrameCount = 0;
   let lastObservedTime = 0;
   const stateLabels: Record<TrackedState, string> = {
-    working: "Possible working", idling: "Possible idling",
+    active_working: "Recent input", working: "Possible working",
+    multiple_faces_present: "Multiple faces", idling: "Possible idling",
     away: "Possibly away", unknown: "Unknown"
   };
 
