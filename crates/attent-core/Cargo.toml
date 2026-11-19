@@ -1,0 +1,12 @@
+[package]
+name = "attent-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+nokhwa.workspace = true
+attent-camera.workspace = true
+attent-model.workspace = true
