@@ -126,8 +126,12 @@ fn start_monitor(
     interval_ms: u64,
     monitor: State<'_, Monitor>,
 ) -> Result<(), String> {
-    let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../models/yunet.onnx");
+    // A remote-built binary must not depend on the build host's source path.
+    let model_path = std::env::var_os("ATTENT_MODEL_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../models/yunet.onnx")
+        });
     info!(
         target: "attentracker_desktop::ipc",
         camera_index,
