@@ -19,12 +19,11 @@ use tracing::{debug, error, info, trace, warn};
 use crate::diagnostics::{DiagnosticsWindow, FrameTimings, scheduler_gap_ms};
 use crate::preview::{FramePreview, encode_preview};
 
-const MODEL_SIDE: u32 = 640;
-
 #[derive(Clone, Debug)]
 pub struct MonitorConfig {
     pub camera_index: u32,
     pub sample_interval: Duration,
+    pub model_input_side: u32,
     pub model_path: PathBuf,
 }
 
@@ -33,6 +32,10 @@ impl MonitorConfig {
         ensure!(
             self.sample_interval <= Duration::from_secs(60),
             "sample_interval must be between 0 (unthrottled) and 60 s"
+        );
+        ensure!(
+            matches!(self.model_input_side, 160 | 320 | 640),
+            "model_input_side must be 160, 320, or 640"
         );
         ensure!(
             !self.model_path.as_os_str().is_empty(),
@@ -178,6 +181,7 @@ impl Monitor {
             target: "attent_core::lifecycle",
             camera_index = config.camera_index,
             target_interval_ms = config.sample_interval.as_millis() as u64,
+            model_input_side = config.model_input_side,
             "monitor start requested"
         );
         let mut worker = self
@@ -296,13 +300,18 @@ fn observe(
         "initializing YuNet and camera"
     );
     let load_started = Instant::now();
-    let model = YuNetModel::load(&config.model_path)
-        .with_context(|| format!("loading YuNet at {}", config.model_path.display()))?;
+    let model = YuNetModel::load_for_side(&config.model_path, config.model_input_side)
+        .with_context(|| format!(
+            "loading YuNet at {} for {}x{} input",
+            config.model_path.display(),
+            config.model_input_side,
+            config.model_input_side
+        ))?;
     let model_load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
     let detector_config = DetectorConfig::default();
     info!(
         target: "attent_core::lifecycle",
-        model_input_side = MODEL_SIDE,
+        model_input_side = config.model_input_side,
         score_threshold = detector_config.score_threshold,
         nms_threshold = detector_config.nms_threshold,
         top_k = detector_config.top_k,
@@ -364,7 +373,7 @@ fn observe(
             previous_driver_timestamp = frame.meta.driver_timestamp;
         }
         let preprocess_started = Instant::now();
-        let input = prepare_yunet(&frame, MODEL_SIDE).context("preprocessing frame")?;
+        let input = prepare_yunet(&frame, config.model_input_side).context("preprocessing frame")?;
         let preprocess_ms = preprocess_started.elapsed().as_secs_f64() * 1000.0;
 
         let inference_started = Instant::now();
@@ -533,6 +542,7 @@ mod tests {
         let mut config = MonitorConfig {
             camera_index: 1,
             sample_interval: Duration::from_millis(250),
+            model_input_side: 320,
             model_path: PathBuf::from("models/yunet.onnx"),
         };
         assert!(config.validate().is_ok());
@@ -543,6 +553,9 @@ mod tests {
         config.sample_interval = Duration::from_secs(60);
         assert!(config.validate().is_ok());
         config.sample_interval = Duration::from_secs(61);
+        assert!(config.validate().is_err());
+        config.sample_interval = Duration::ZERO;
+        config.model_input_side = 192;
         assert!(config.validate().is_err());
     }
 
