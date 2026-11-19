@@ -121,7 +121,7 @@
   );
   let unthrottledEstimate = $derived(
     snapshot.lastAnalysisMs && snapshot.lastAnalysisMs > 0
-      ? 1000 / (snapshot.lastAnalysisMs + (snapshot.lastPreviewMs ?? 0))
+      ? 1000 / snapshot.lastAnalysisMs
       : null
   );
 
@@ -454,7 +454,7 @@
           <p class="detail-value">{fmt(snapshot.lastObservationPeriodMs)} <span>ms</span></p>
         </div>
         <div>
-          <p class="small-label">Preview JPEG overhead</p>
+          <p class="small-label">Async preview JPEG encode</p>
           <p class="detail-value">{fmt(snapshot.lastPreviewMs)} <span>ms</span></p>
         </div>
         <div>
@@ -463,7 +463,7 @@
         </div>
       </div>
     </div>
-    <p class="measurement-note">Estimated single-worker max throughput from the latest pass: {unthrottledEstimate == null ? "—" : unthrottledEstimate.toFixed(2)} FPS (not a guarantee). Inference is sequential; the target period is not a promised FPS. Developer builds may be slower than optimized builds.</p>
+    <p class="measurement-note">Estimated single-worker max throughput from the latest pass: {unthrottledEstimate == null ? "—" : unthrottledEstimate.toFixed(2)} FPS (not a guarantee). Inference runs sequentially; preview JPEG encoding is asynchronous. A requested sampling period is not a guaranteed FPS. Release builds may be faster than debug builds.</p>
   </section>
 
   {#if snapshot.lastError}
