@@ -35,6 +35,8 @@
     height: number;
     dataUrl: string;
     faces: FaceOverlay[];
+    detectionSequence: number | null;
+    detectionAgeMs: number | null;
   };
 
   const empty: Snapshot = {
@@ -57,6 +59,8 @@
   let commandError = $state<string | null>(null);
   let lastPreviewSequence = 0;
   let polling = false;
+  let previewPolling = false;
+  let previewEpoch = 0;
   let lastRenderedSequence = 0;
 
   // Counters only: no images or raw frame contents enter telemetry.
@@ -145,50 +149,61 @@
     }
     polling = true;
     metrics.polls += 1;
-    let previewRequestStarted: number | null = null;
     try {
       const statusStarted = performance.now();
       snapshot = await invoke<Snapshot>("monitor_status");
       const statusMs = performance.now() - statusStarted;
       metrics.statusLatencySumMs += statusMs;
       metrics.statusLatencyMaxMs = Math.max(metrics.statusLatencyMaxMs, statusMs);
-
-      if (snapshot.phase === "running" && previewEnabled) {
-        metrics.previewRequests += 1;
-        previewRequestStarted = performance.now();
-        const next = await invoke<FramePreview | null>("monitor_preview", {
-          afterSequence: lastPreviewSequence
-        });
-        const previewMs = performance.now() - previewRequestStarted;
-        metrics.previewLatencySumMs += previewMs;
-        metrics.previewLatencyMaxMs = Math.max(metrics.previewLatencyMaxMs, previewMs);
-        previewRequestStarted = null;
-        if (next && previewEnabled && next.sequence > lastPreviewSequence) {
-          lastPreviewSequence = next.sequence;
-          metrics.previewUpdates += 1;
-          metrics.previewPayloadChars += next.dataUrl.length;
-          preview = next;
-        } else {
-          metrics.previewNoChange += 1;
-        }
-      } else if (snapshot.phase === "stopped" || snapshot.phase === "error") {
+      if (snapshot.phase === "stopped" || snapshot.phase === "error") {
+        // Do not invalidate an in-flight preview on every idle status poll.
+        if (preview !== null || lastPreviewSequence !== 0) previewEpoch += 1;
         preview = null;
         lastPreviewSequence = 0;
         lastRenderedSequence = 0;
       }
-    } catch (e) {
-      if (previewRequestStarted !== null) {
-        metrics.previewErrors += 1;
-      } else {
-        metrics.pollErrors += 1;
-      }
-      commandError = String(e);
+    } catch (error) {
+      metrics.pollErrors += 1;
+      commandError = String(error);
     } finally {
       polling = false;
     }
   }
 
+  // Preview IPC is independent from status polling. An epoch fence rejects
+  // late images after Stop, Hide, or the beginning of another session.
+  async function refreshPreview() {
+    if (previewPolling || !previewEnabled || snapshot.phase !== "running") return;
+    previewPolling = true;
+    const epoch = previewEpoch;
+    metrics.previewRequests += 1;
+    const begun = performance.now();
+    try {
+      const next = await invoke<FramePreview | null>("monitor_preview", {
+        afterSequence: lastPreviewSequence
+      });
+      const elapsed = performance.now() - begun;
+      metrics.previewLatencySumMs += elapsed;
+      metrics.previewLatencyMaxMs = Math.max(metrics.previewLatencyMaxMs, elapsed);
+      if (epoch !== previewEpoch || !previewEnabled || snapshot.phase !== "running") return;
+      if (next && next.sequence > lastPreviewSequence) {
+        lastPreviewSequence = next.sequence;
+        metrics.previewUpdates += 1;
+        metrics.previewPayloadChars += next.dataUrl.length;
+        preview = next;
+      } else {
+        metrics.previewNoChange += 1;
+      }
+    } catch (error) {
+      metrics.previewErrors += 1;
+      if (epoch === previewEpoch) commandError = String(error);
+    } finally {
+      previewPolling = false;
+    }
+  }
+
   async function start() {
+    previewEpoch += 1;
     commandPending = true;
     commandError = null;
     preview = null;
@@ -209,6 +224,7 @@
   }
 
   async function stop() {
+    previewEpoch += 1;
     commandPending = true;
     commandError = null;
     try {
@@ -228,6 +244,7 @@
     commandPending = true;
     commandError = null;
     const next = !previewEnabled;
+    previewEpoch += 1;
     try {
       await invoke("set_preview_enabled", { enabled: next });
       previewEnabled = next;
@@ -246,10 +263,13 @@
   onMount(() => {
     void refresh();
     const timer = window.setInterval(() => { void refresh(); }, 400);
+    const previewTimer = window.setInterval(() => { void refreshPreview(); }, 80);
     const diagnosticsTimer = window.setInterval(() => { void reportFrontendTelemetry(); }, 5000);
     return () => {
       window.clearInterval(timer);
+      window.clearInterval(previewTimer);
       window.clearInterval(diagnosticsTimer);
+      previewEpoch += 1;
       void reportFrontendTelemetry();
       // Explicitly disable the opt-in image buffer when the window unmounts.
       void invoke("set_preview_enabled", { enabled: false });
@@ -282,7 +302,7 @@
     <div>
       <p class="eyebrow">01 / Observation</p>
       <h1>Camera diagnostics</h1>
-      <p class="subtitle">See exactly which sampled frame the detector analyzed, with its bounding boxes and facial landmarks.</p>
+      <p class="subtitle">A smooth opt-in live view with the most recent detections. Overlays may lag behind the camera image.</p>
     </div>
     <span class="privacy-mark">LOCAL ONLY <span aria-hidden="true">●</span></span>
   </div>
@@ -299,7 +319,7 @@
 
       <div class="camera-frame" class:mirrored={mirror} style={`aspect-ratio: ${preview ? preview.width / preview.height : 4 / 3}`}>
         {#if preview && previewEnabled}
-          <img class="camera-image" src={preview.dataUrl} alt="Last analyzed camera frame" onload={previewImageLoaded} />
+          <img class="camera-image" src={preview.dataUrl} alt="Live local camera frame with optionally approximate latest detections" onload={previewImageLoaded} />
           <svg
             class="detection-overlay"
             viewBox={`0 0 ${preview.width} ${preview.height}`}
@@ -327,7 +347,11 @@
               {/each}
             {/each}
           </svg>
-          <div class="camera-overlay-caption">MODEL-SYNCHRONIZED FRAME · NOT RAW CAMERA FPS</div>
+          <div class="camera-overlay-caption">
+            LIVE CAMERA · {preview.detectionSequence == null
+              ? "NO RECENT DETECTION OVERLAY"
+              : `LATEST ANALYSIS #${preview.detectionSequence} · ${Math.round(preview.detectionAgeMs ?? 0)} MS OLD (APPROXIMATE)`}
+          </div>
         {:else}
           <div class="preview-placeholder">
             <div class="camera-symbol" aria-hidden="true">
@@ -337,9 +361,9 @@
                 <path d="M23 16v-6m-4 3h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
               </svg>
             </div>
-            <p class="placeholder-heading">{previewEnabled ? "Waiting for the next analyzed frame" : "Camera preview is private"}</p>
+            <p class="placeholder-heading">{previewEnabled ? "Waiting for live camera frames" : "Camera preview is private"}</p>
             <p class="placeholder-detail">
-              {previewEnabled ? "Start monitoring or wait for the current YuNet pass to finish." : "Enable the diagnostic preview to inspect live detection results. It is disabled by default."}
+              {previewEnabled ? "Start monitoring or wait for the camera to deliver a frame." : "Enable local live preview to inspect approximate detection overlays. It is disabled by default."}
             </p>
           </div>
         {/if}
