@@ -20,6 +20,8 @@ git fetch origin
 git switch --track origin/performance/yunet-input-and-preview
 pnpm --dir app/desktop install --frozen-lockfile
 pnpm --dir app/desktop build
+bash scripts/fetch-yunet-dynamic.sh
+sha256sum models/yunet-dynamic.onnx
 ssh kiyoromi 'mkdir -p ~/attentracker-build'
 rsync -az --info=progress2 \
   --exclude='.git/' --exclude='target/' --exclude='node_modules/' \
@@ -91,15 +93,29 @@ WebKitGTK/GTK system libraries. If `ldd` reports missing libraries,
 resolve that before benchmarking.
 
 ```sh
-ATTENT_MODEL_PATH="$PWD/models/yunet.onnx" \
+ATTENT_MODEL_PATH="$PWD/models/yunet-dynamic.onnx" \
 RUST_LOG='warn,attentracker_desktop=info,attent_core=info,attent_camera=info,attent_model=info' \
   ./app/desktop/src-tauri/target/release/attentracker-desktop \
   2>&1 | tee "$HOME/attentracker-release-benchmark.log"
 ```
 
-The model is **not yet bundled**: `ATTENT_MODEL_PATH` is required for
-this offloaded build. This is a developer performance experiment, not
-the final distribution procedure.
+The model is **not yet bundled**: for this developer benchmark set
+`ATTENT_MODEL_PATH` to the separately downloaded
+`models/yunet-dynamic.onnx` file. The bundled, fixed-640
+`models/yunet.onnx` cannot be made into a 160/320 input graph by
+changing just the Tract input fact; its internal shapes remain fixed
+at 640. The verified dynamic-input `2026may` variant is published by
+OpenCV Zoo under the YuNet model's MIT license.
+
+`scripts/fetch-yunet-dynamic.sh` downloads the actual Git LFS object
+from OpenCV's repository and checks the pinned SHA-256. Do not use the
+131-byte Git LFS pointer as the model. A checksum mismatch is a hard
+error; investigate rather than removing the check.
+
+**Known failure in previous experiments:** starting 160 or 320 with
+`ATTENT_MODEL_PATH=.../models/yunet.onnx` fails before camera
+initialization because the fixed model's first convolution expects
+640x640. The command below now selects the dynamic variant.
 
 ## 4. Reproducible test matrix
 
@@ -134,7 +150,10 @@ a single instantaneous FPS label.
 If the 320 or 160 variant cannot compile or execute the ONNX graph,
 the error will appear under `monitor worker failed`. Restore 640
 to retain the known functional baseline and report the complete error.
-The included CI model smoke test also covers the 320 path.
+The CI model integration test downloads and verifies the dynamic
+model, then executes 160, 320 and 640 input shapes with Tract.
+A successful CI test is required before treating smaller resolutions
+as supported. The original static 640 model remains a fallback.
 
 ## 5. Interpret the results
 
