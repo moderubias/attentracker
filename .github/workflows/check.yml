@@ -25,7 +25,7 @@ jobs:
         run: bash scripts/fetch-yunet-dynamic.sh
       - name: Compile and test workspace (160/320/640 ONNX inference)
         env:
-          ATTENT_TEST_DYNAMIC_YUNET: models/yunet-dynamic.onnx
+          ATTENT_TEST_DYNAMIC_YUNET: ${{ github.workspace }}/models/yunet-dynamic.onnx
         run: cargo test --workspace
 
   desktop:
