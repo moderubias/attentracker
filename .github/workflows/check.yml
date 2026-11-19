@@ -21,7 +21,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libclang-dev clang libv4l-dev nasm
       - name: Format sources before compilation
         run: cargo fmt --all
-      - name: Compile and test workspace
+      - name: Fetch checksum-pinned dynamic YuNet for integration tests
+        run: bash scripts/fetch-yunet-dynamic.sh
+      - name: Compile and test workspace (160/320/640 ONNX inference)
+        env:
+          ATTENT_TEST_DYNAMIC_YUNET: models/yunet-dynamic.onnx
         run: cargo test --workspace
 
   desktop:
