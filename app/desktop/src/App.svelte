@@ -56,6 +56,44 @@
   let commandError = $state<string | null>(null);
   let lastPreviewSequence = 0;
   let polling = false;
+  let lastRenderedSequence = 0;
+
+  // Counters only: no images or raw frame contents enter telemetry.
+  function emptyMetrics() {
+    return {
+      polls: 0, busySkips: 0, pollErrors: 0,
+      previewRequests: 0, previewUpdates: 0,
+      previewNoChange: 0, previewErrors: 0, renderedImages: 0,
+      statusLatencySumMs: 0, statusLatencyMaxMs: 0,
+      previewLatencySumMs: 0, previewLatencyMaxMs: 0,
+      previewPayloadChars: 0
+    };
+  }
+  let metrics = emptyMetrics();
+
+  async function reportFrontendTelemetry() {
+    const report = {
+      ...metrics,
+      lastReceivedSequence: lastPreviewSequence,
+      lastRenderedSequence,
+      previewEnabled,
+      phase: snapshot.phase
+    };
+    metrics = emptyMetrics();
+    if (report.polls === 0 && report.busySkips === 0 && report.renderedImages === 0) return;
+    try {
+      await invoke("report_frontend_telemetry", { report });
+    } catch (error) {
+      console.warn("Failed to report numeric frontend diagnostics", error);
+    }
+  }
+
+  function previewImageLoaded() {
+    if (previewEnabled && preview) {
+      lastRenderedSequence = preview.sequence;
+      metrics.renderedImages += 1;
+    }
+  }
 
   const states: Record<Presence, string> = {
     unknown: "No observation",
@@ -99,23 +137,49 @@
   let totalStages = $derived(stages.reduce((sum, part) => sum + (part.ms ?? 0), 0));
 
   async function refresh() {
-    if (polling) return;
+    if (polling) {
+      metrics.busySkips += 1;
+      return;
+    }
     polling = true;
+    metrics.polls += 1;
+    let previewRequestStarted: number | null = null;
     try {
+      const statusStarted = performance.now();
       snapshot = await invoke<Snapshot>("monitor_status");
+      const statusMs = performance.now() - statusStarted;
+      metrics.statusLatencySumMs += statusMs;
+      metrics.statusLatencyMaxMs = Math.max(metrics.statusLatencyMaxMs, statusMs);
+
       if (snapshot.phase === "running" && previewEnabled) {
+        metrics.previewRequests += 1;
+        previewRequestStarted = performance.now();
         const next = await invoke<FramePreview | null>("monitor_preview", {
           afterSequence: lastPreviewSequence
         });
+        const previewMs = performance.now() - previewRequestStarted;
+        metrics.previewLatencySumMs += previewMs;
+        metrics.previewLatencyMaxMs = Math.max(metrics.previewLatencyMaxMs, previewMs);
+        previewRequestStarted = null;
         if (next && previewEnabled && next.sequence > lastPreviewSequence) {
           lastPreviewSequence = next.sequence;
+          metrics.previewUpdates += 1;
+          metrics.previewPayloadChars += next.dataUrl.length;
           preview = next;
+        } else {
+          metrics.previewNoChange += 1;
         }
       } else if (snapshot.phase === "stopped" || snapshot.phase === "error") {
         preview = null;
         lastPreviewSequence = 0;
+        lastRenderedSequence = 0;
       }
     } catch (e) {
+      if (previewRequestStarted !== null) {
+        metrics.previewErrors += 1;
+      } else {
+        metrics.pollErrors += 1;
+      }
       commandError = String(e);
     } finally {
       polling = false;
@@ -127,6 +191,7 @@
     commandError = null;
     preview = null;
     lastPreviewSequence = 0;
+    lastRenderedSequence = 0;
     try {
       await invoke("start_monitor", {
         cameraIndex: Math.trunc(cameraIndex),
@@ -147,6 +212,7 @@
       await invoke("stop_monitor");
       preview = null;
       lastPreviewSequence = 0;
+      lastRenderedSequence = 0;
       await refresh();
     } catch (e) {
       commandError = String(e);
@@ -165,6 +231,7 @@
       if (!next) {
         preview = null;
         lastPreviewSequence = 0;
+        lastRenderedSequence = 0;
       }
     } catch (e) {
       commandError = String(e);
@@ -176,8 +243,11 @@
   onMount(() => {
     void refresh();
     const timer = window.setInterval(() => { void refresh(); }, 400);
+    const diagnosticsTimer = window.setInterval(() => { void reportFrontendTelemetry(); }, 5000);
     return () => {
       window.clearInterval(timer);
+      window.clearInterval(diagnosticsTimer);
+      void reportFrontendTelemetry();
       // Explicitly disable the opt-in image buffer when the window unmounts.
       void invoke("set_preview_enabled", { enabled: false });
     };
@@ -226,7 +296,7 @@
 
       <div class="camera-frame" class:mirrored={mirror} style={`aspect-ratio: ${preview ? preview.width / preview.height : 4 / 3}`}>
         {#if preview && previewEnabled}
-          <img class="camera-image" src={preview.dataUrl} alt="Last analyzed camera frame" />
+          <img class="camera-image" src={preview.dataUrl} alt="Last analyzed camera frame" onload={previewImageLoaded} />
           <svg
             class="detection-overlay"
             viewBox={`0 0 ${preview.width} ${preview.height}`}
