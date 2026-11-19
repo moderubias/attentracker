@@ -1,3 +1,4 @@
+mod diagnostics;
 mod monitor;
 mod preview;
 

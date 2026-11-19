@@ -9,3 +9,4 @@ tract.workspace = true
 anyhow.workspace = true
 attent-camera.workspace = true
 bytemuck.workspace = true
+tracing.workspace = true

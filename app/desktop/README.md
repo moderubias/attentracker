@@ -41,6 +41,41 @@ take screenshots; consider other people in the camera's field of view.
 
 The project uses system fonts only and does not fetch remote UI assets.
 
+## Diagnostic logging
+
+All logs are written by the Rust backend to the terminal running Tauri.
+The default logging level reports startup/shutdown, camera negotiation,
+preview permission changes, failures, and one performance window approximately
+every 5 seconds. These events contain numbers only, never images, keyboard
+input, audio, or the JPEG/base64 preview.
+
+For a **shareable verbose trace** on Linux, run from `app/desktop`:
+
+```sh
+RUST_LOG='warn,attentracker_desktop=info,attent_core=debug,attent_camera=trace,attent_model=trace' \
+  pnpm tauri dev 2>&1 | tee "$HOME/attentracker-dai10.log"
+```
+
+`attent_core::pipeline` DEBUG entries report one observation per line.
+`attent_core::telemetry` INFO entries summarize each ~5-second window:
+effective FPS, mean/p50/p95/max inference time, camera/decode/preview
+overhead, requested sleep, and any otherwise unaccounted scheduler gap.
+`attent_model::inference` TRACE distinguishes tensor creation, actual
+Tract execution, and output copies. `attent_camera::capture` TRACE
+reports image resolution and capture/decode durations.
+
+To compare scheduling fairly: use the same camera, lighting and preview
+setting; run Balanced for at least 30 seconds, stop, then Max throughput
+for 30 seconds. Repeat once. Window-to-window variation matters more than
+a single instantaneous FPS number. Switch the camera preview OFF for
+the first comparison, then ON for a second pair of trials.
+
+**Before sharing the log:** inspect it for filesystem paths, camera device
+identifiers, process/environment details and any incidental diagnostic
+messages from dependencies. The app never intentionally logs raw camera
+pixels or preview payloads, but other tools may print additional output.
+There is no automatic upload.
+
 ## Performance interpretation
 
 The main latency number measures camera wait + MJPEG decode + tensor prep
