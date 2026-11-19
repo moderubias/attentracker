@@ -251,6 +251,7 @@ impl Monitor {
                         state.phase = MonitorPhase::Stopped;
                         state.presence = Presence::Unknown;
                         state.activity_state = ActivityState::Unknown;
+                        state.input_source = None;
                         state.face_count = None;
                     }
                     Err(err) => {
@@ -263,6 +264,7 @@ impl Monitor {
                         state.phase = MonitorPhase::Error;
                         state.presence = Presence::Unknown;
                         state.activity_state = ActivityState::Unknown;
+                        state.input_source = None;
                         state.face_count = None;
                         state.last_error = Some(format!("{err:#}"));
                     }
