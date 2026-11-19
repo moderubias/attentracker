@@ -29,8 +29,8 @@ pub struct MonitorConfig {
 impl MonitorConfig {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            (Duration::from_millis(250)..=Duration::from_secs(60)).contains(&self.sample_interval),
-            "sample_interval must be between 250 ms and 60 s"
+            self.sample_interval <= Duration::from_secs(60),
+            "sample_interval must be between 0 (unthrottled) and 60 s"
         );
         ensure!(
             !self.model_path.as_os_str().is_empty(),
@@ -350,6 +350,8 @@ fn observe(
             state.last_error = None;
         }
 
+        // An interval of zero intentionally disables the artificial delay.
+        // Inference still runs sequentially: this does not promise camera FPS.
         let remaining = config.sample_interval.saturating_sub(begun.elapsed());
         match stop_rx.recv_timeout(remaining) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
@@ -379,8 +381,10 @@ mod tests {
             model_path: PathBuf::from("models/yunet.onnx"),
         };
         assert!(config.validate().is_ok());
-        config.sample_interval = Duration::from_millis(249);
-        assert!(config.validate().is_err());
+        config.sample_interval = Duration::ZERO;
+        assert!(config.validate().is_ok()); // run as fast as a single worker allows
+        config.sample_interval = Duration::from_millis(50);
+        assert!(config.validate().is_ok());
         config.sample_interval = Duration::from_secs(60);
         assert!(config.validate().is_ok());
         config.sample_interval = Duration::from_secs(61);
