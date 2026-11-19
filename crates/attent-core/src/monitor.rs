@@ -243,7 +243,7 @@ impl Monitor {
                     Err(err) => {
                         error!(
                             target: "attent_core::lifecycle",
-                            error = %err,
+                            error = %format!("{err:#}"),
                             frames_analyzed = state.frames_analyzed,
                             "monitor worker failed"
                         );
@@ -311,7 +311,7 @@ fn observe(
     let load_started = Instant::now();
     let model = YuNetModel::load_for_side(&config.model_path, config.model_input_side)
         .with_context(|| format!(
-            "loading YuNet at {} for {}x{} input",
+            "loading YuNet at {} for {}x{} input; if changing input resolution, fetch the upstream dynamic model using bash scripts/fetch-yunet-dynamic.sh and set ATTENT_MODEL_PATH to models/yunet-dynamic.onnx",
             config.model_path.display(),
             config.model_input_side,
             config.model_input_side
