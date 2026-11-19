@@ -299,7 +299,17 @@ fn observe(
     let model = YuNetModel::load(&config.model_path)
         .with_context(|| format!("loading YuNet at {}", config.model_path.display()))?;
     let model_load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
-    let detector = YuNetDetector::new(DetectorConfig::default())?;
+    let detector_config = DetectorConfig::default();
+    info!(
+        target: "attent_core::lifecycle",
+        model_input_side = MODEL_SIDE,
+        score_threshold = detector_config.score_threshold,
+        nms_threshold = detector_config.nms_threshold,
+        top_k = detector_config.top_k,
+        max_faces = detector_config.max_faces,
+        "detector parameters"
+    );
+    let detector = YuNetDetector::new(detector_config)?;
 
     let preferred = CameraFormat::new(Resolution::new(640, 480), FrameFormat::MJPEG, 30);
     let camera_open_started = Instant::now();
@@ -324,6 +334,8 @@ fn observe(
     }
 
     let mut previous_sample_start: Option<Instant> = None;
+    let mut previous_receive_tick: Option<Instant> = None;
+    let mut previous_driver_timestamp: Option<Duration> = None;
     let mut last_preview_at: Option<Instant> = None;
     let mut stats = DiagnosticsWindow::new();
     let mut previous_cycle: Option<(f64, f64)> = None;
@@ -340,6 +352,17 @@ fn observe(
         previous_sample_start = Some(begun);
 
         let frame = camera.capture().context("capturing camera frame")?;
+        let receive_period_ms = previous_receive_tick.map(|previous| {
+            frame.meta.received_tick.duration_since(previous).as_secs_f64() * 1000.0
+        });
+        previous_receive_tick = Some(frame.meta.received_tick);
+        let driver_timestamp_unchanged = matches!(
+            (previous_driver_timestamp, frame.meta.driver_timestamp),
+            (Some(previous), Some(current)) if previous == current
+        );
+        if frame.meta.driver_timestamp.is_some() {
+            previous_driver_timestamp = frame.meta.driver_timestamp;
+        }
         let preprocess_started = Instant::now();
         let input = prepare_yunet(&frame, MODEL_SIDE).context("preprocessing frame")?;
         let preprocess_ms = preprocess_started.elapsed().as_secs_f64() * 1000.0;
@@ -360,12 +383,14 @@ fn observe(
 
         let mut preview_ms = None;
         let mut preview_error = None;
-        if preview_enabled.load(Ordering::Relaxed)
-            && last_preview_at.is_none_or(|t| t.elapsed() >= Duration::from_millis(300))
-        {
+        let mut preview_encoded = false;
+        let preview_requested = preview_enabled.load(Ordering::Relaxed)
+            && last_preview_at.is_none_or(|t| t.elapsed() >= Duration::from_millis(300));
+        if preview_requested {
             let preview_started = Instant::now();
             match encode_preview(&frame, &faces) {
                 Ok(preview) => {
+                    preview_encoded = true;
                     trace!(
                         target: "attent_core::preview",
                         sequence = preview.sequence,
@@ -393,8 +418,11 @@ fn observe(
             last_preview_at = Some(Instant::now());
         }
 
+        let snapshot_lock_started = Instant::now();
+        let snapshot_lock_wait_ms;
         {
             let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+            snapshot_lock_wait_ms = snapshot_lock_started.elapsed().as_secs_f64() * 1000.0;
             state.frames_analyzed = state.frames_analyzed.saturating_add(1);
             state.presence = Presence::from_count(faces.len());
             state.face_count = Some(faces.len());
@@ -416,6 +444,7 @@ fn observe(
             state.last_analysis_ms = Some(analysis_ms);
             state.last_error = None;
         }
+        let post_capture_age_ms = frame.meta.received_tick.elapsed().as_secs_f64() * 1000.0;
 
         // An interval of zero intentionally disables the artificial delay.
         // Inference still runs sequentially: this does not promise camera FPS.
@@ -426,6 +455,13 @@ fn observe(
         previous_cycle = Some((iteration_ms, planned_sleep_ms));
         let timings = FrameTimings {
             capture_ms: frame.meta.capture_duration.as_secs_f64() * 1000.0,
+            receive_period_ms,
+            post_capture_age_ms,
+            snapshot_lock_wait_ms,
+            driver_timestamp_unchanged,
+            preview_requested,
+            preview_encoded,
+            preview_error: preview_error.is_some(),
             decode_ms: frame.meta.decode_duration.as_secs_f64() * 1000.0,
             preprocess_ms,
             inference_ms,
@@ -444,6 +480,14 @@ fn observe(
             sequence = frame.meta.sequence,
             faces = faces.len(),
             capture_ms = timings.capture_ms,
+            receive_period_ms = timings.receive_period_ms.unwrap_or(0.0),
+            post_capture_age_ms = timings.post_capture_age_ms,
+            snapshot_lock_wait_ms = timings.snapshot_lock_wait_ms,
+            driver_timestamp_available = frame.meta.driver_timestamp.is_some(),
+            driver_timestamp_unchanged,
+            preview_requested,
+            preview_encoded,
+            preview_error = timings.preview_error,
             decode_ms = timings.decode_ms,
             preprocess_ms = timings.preprocess_ms,
             inference_ms = timings.inference_ms,
@@ -458,7 +502,10 @@ fn observe(
             "completed sampled frame"
         );
         stats.record(timings);
-        stats.report_if_due(config.sample_interval.as_millis() as u64, preview_enabled.load(Ordering::Relaxed));
+        stats.report_if_due(
+            config.sample_interval.as_millis() as u64,
+            preview_enabled.load(Ordering::Relaxed),
+        );
         match stop_rx.recv_timeout(remaining) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
