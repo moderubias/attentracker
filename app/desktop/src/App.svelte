@@ -51,7 +51,8 @@
   let previewEnabled = $state(false);
   let mirror = $state(false);
   let cameraIndex = $state(1);
-  let intervalMs = $state(250);
+  let intervalMs = $state(0);
+  let modelInputSide = $state(320);
   let commandPending = $state(false);
   let commandError = $state<string | null>(null);
   let lastPreviewSequence = 0;
@@ -110,7 +111,8 @@
   let canStart = $derived(
     !busy && !commandPending &&
     Number.isInteger(cameraIndex) && cameraIndex >= 0 &&
-    Number.isInteger(intervalMs) && intervalMs >= 0 && intervalMs <= 60_000
+    Number.isInteger(intervalMs) && intervalMs >= 0 && intervalMs <= 60_000 &&
+    [160, 320, 640].includes(modelInputSide)
   );
   let observedFps = $derived(
     snapshot.lastObservationPeriodMs && snapshot.lastObservationPeriodMs > 0
@@ -195,7 +197,8 @@
     try {
       await invoke("start_monitor", {
         cameraIndex: Math.trunc(cameraIndex),
-        intervalMs: Math.trunc(intervalMs)
+        intervalMs: Math.trunc(intervalMs),
+        modelInputSide
       });
       await refresh();
     } catch (e) {
@@ -271,7 +274,7 @@
       <span class:active={snapshot.phase === "running"} class:starting={snapshot.phase === "starting"} class="phase">
         <span class="indicator"></span>{snapshot.phase}
       </span>
-      <span class="version">YuNet · ONNX</span>
+      <span class="version">YuNet · ONNX · {modelInputSide}px</span>
     </div>
   </header>
 
@@ -372,6 +375,13 @@
         <label>Camera index
           <input type="number" min="0" step="1" bind:value={cameraIndex} disabled={busy || commandPending} />
         </label>
+        <label>YuNet model input
+          <select bind:value={modelInputSide} disabled={busy || commandPending}>
+            <option value={160}>160 × 160 · fastest / lower accuracy</option>
+            <option value={320}>320 × 320 · balanced</option>
+            <option value={640}>640 × 640 · detailed / slower</option>
+          </select>
+        </label>
         <label>Target sample period <span>(ms; 0 = max rate)</span>
           <input type="number" min="0" max="60000" step="50" bind:value={intervalMs} disabled={busy || commandPending} />
         </label>
@@ -382,7 +392,7 @@
         <button type="button" class:selected={intervalMs === 250} onclick={() => intervalMs = 250} disabled={busy || commandPending}>Balanced · 250 ms</button>
         <button type="button" class:selected={intervalMs === 0} onclick={() => intervalMs = 0} disabled={busy || commandPending}>Max throughput</button>
       </div>
-      <p class="rate-hint">Sampling limits apply between completed passes. At 0 ms the worker performs consecutive analyses with no deliberate sleep. Stop to change the rate.</p>
+      <p class="rate-hint">Input size changes model cost and detection sensitivity, especially for small or distant faces. Sampling limits apply between passes; 0 ms runs without deliberate sleep. Stop before changing input size.</p>
 
       <div class="session-actions">
         <button class="start-button" onclick={start} disabled={!canStart}>
