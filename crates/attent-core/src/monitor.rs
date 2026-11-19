@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use attent_activity::{ActivityClassifier, ActivityState, InputEvidence};
 use attent_camera::prepare_yunet;
 use attent_model::{DetectorConfig, YuNetDetector, YuNetModel};
 use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, Resolution};
@@ -84,6 +85,9 @@ impl Presence {
 pub struct MonitorSnapshot {
     pub phase: MonitorPhase,
     pub presence: Presence,
+    pub activity_state: ActivityState,
+    /// Missing means no OS-wide input evidence; never assume activity.
+    pub input_source: Option<String>,
     pub camera_index: Option<u32>,
     pub frames_analyzed: u64,
     pub face_count: Option<usize>,
@@ -239,6 +243,7 @@ impl Monitor {
                         );
                         state.phase = MonitorPhase::Stopped;
                         state.presence = Presence::Unknown;
+                        state.activity_state = ActivityState::Unknown;
                         state.face_count = None;
                     }
                     Err(err) => {
@@ -250,6 +255,7 @@ impl Monitor {
                         );
                         state.phase = MonitorPhase::Error;
                         state.presence = Presence::Unknown;
+                        state.activity_state = ActivityState::Unknown;
                         state.face_count = None;
                         state.last_error = Some(format!("{err:#}"));
                     }
@@ -364,6 +370,7 @@ fn observe(
     let mut previous_driver_timestamp: Option<Duration> = None;
     let mut last_analyzed_sequence = 0_u64;
     let mut stats = DiagnosticsWindow::new();
+    let mut classifier = ActivityClassifier::new();
     let mut previous_cycle: Option<(f64, f64)> = None;
     loop {
         // Wake periodically to honor Stop even if the camera is not delivering.
@@ -422,6 +429,11 @@ fn observe(
             observed_at: frame.meta.received_tick,
             faces: faces.clone(),
         });
+        let activity_state = classifier.observe(
+            Instant::now(),
+            Some(faces.len()),
+            InputEvidence::default(), // No OS input probe yet: honest Unknown/possible Away only.
+        );
         let analysis_ms = begun.elapsed().as_secs_f64() * 1000.0;
 
         // A stop request may have arrived during a long model inference.
@@ -442,6 +454,7 @@ fn observe(
             snapshot_lock_wait_ms = snapshot_lock_started.elapsed().as_secs_f64() * 1000.0;
             state.frames_analyzed = state.frames_analyzed.saturating_add(1);
             state.presence = Presence::from_count(faces.len());
+            state.activity_state = activity_state;
             state.face_count = Some(faces.len());
             state.best_confidence = faces.first().map(|f| f.confidence);
             state.last_observed_at_ms = frame
@@ -495,6 +508,7 @@ fn observe(
             event = "frame",
             sequence = frame.meta.sequence,
             faces = faces.len(),
+            activity_state = ?activity_state,
             capture_ms = timings.capture_ms,
             receive_period_ms = timings.receive_period_ms.unwrap_or(0.0),
             post_capture_age_ms = timings.post_capture_age_ms,
@@ -588,6 +602,7 @@ mod tests {
         let s = monitor.snapshot();
         assert_eq!(s.phase, MonitorPhase::Stopped);
         assert_eq!(s.presence, Presence::Unknown);
+        assert_eq!(s.activity_state, ActivityState::Unknown);
         assert_eq!(s.face_count, None);
     }
 }
