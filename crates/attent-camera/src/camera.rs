@@ -115,7 +115,15 @@ impl AttentCamera {
 
     pub fn capture(&mut self) -> Result<CapturedFrame, NokhwaError> {
         let capture_start = Instant::now();
-        let buffer = self.camera.frame()?;
+        let buffer = self.camera.frame().map_err(|err| {
+            tracing::error!(
+                target: "attent_camera::capture",
+                sequence_expected = self.sequence.saturating_add(1),
+                error = %err,
+                "camera backend failed to provide a frame"
+            );
+            err
+        })?;
         let received_tick = Instant::now();
         let received_at = SystemTime::now();
         let capture_duration = received_tick.duration_since(capture_start);
@@ -123,8 +131,23 @@ impl AttentCamera {
         let driver_timestamp = buffer.capture_timestamp();
         let source_format = buffer.source_frame_format();
         let decode_start = Instant::now();
-        let rgb = buffer.decode_image::<RgbFormat>()?;
+        let rgb = buffer.decode_image::<RgbFormat>().map_err(|err| {
+            tracing::error!(
+                target: "attent_camera::capture",
+                source_format = ?source_format,
+                error = %err,
+                "camera frame decode failed"
+            );
+            err
+        })?;
         let decode_duration = decode_start.elapsed();
+        if capture_duration > Duration::from_secs(2) {
+            tracing::warn!(
+                target: "attent_camera::capture",
+                capture_ms = capture_duration.as_secs_f64() * 1000.0,
+                "capture backend blocked for over 2 seconds"
+            );
+        }
 
         self.sequence = self.sequence.saturating_add(1);
         tracing::trace!(
@@ -134,6 +157,9 @@ impl AttentCamera {
             decode_ms = decode_duration.as_secs_f64() * 1000.0,
             width = rgb.width(),
             height = rgb.height(),
+            source_format = ?source_format,
+            driver_timestamp_present = driver_timestamp.is_some(),
+            driver_timestamp_ms = driver_timestamp.map(|t| t.as_secs_f64() * 1000.0).unwrap_or(-1.0),
             "frame captured and decoded"
         );
         Ok(CapturedFrame {
