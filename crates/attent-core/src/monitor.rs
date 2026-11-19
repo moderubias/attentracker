@@ -534,13 +534,19 @@ fn observe(
         stats.report_if_due(
             config.sample_interval.as_millis() as u64,
             preview_enabled.load(Ordering::Relaxed),
+            config.model_input_side,
         );
         match stop_rx.recv_timeout(remaining) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
-    stats.report("stopped", config.sample_interval.as_millis() as u64, preview_enabled.load(Ordering::Relaxed));
+    stats.report(
+        "stopped",
+        config.sample_interval.as_millis() as u64,
+        preview_enabled.load(Ordering::Relaxed),
+        config.model_input_side,
+    );
     Ok(())
 }
 
