@@ -69,9 +69,15 @@ fn preprocess_rgb(rgb: &RgbImage, side: u32) -> Result<(Vec<f32>, Letterbox)> {
         .checked_mul(3)
         .context("tensor dimensions overflow")?;
 
-    let resized = resize(rgb, new_w, new_h, FilterType::Triangle);
+    // Avoid a full image resize when input already has the model's dimensions.
+    let resized = if new_w == w && new_h == h {
+        None
+    } else {
+        Some(resize(rgb, new_w, new_h, FilterType::Triangle))
+    };
+    let pixels = resized.as_ref().unwrap_or(rgb);
     let mut data = vec![0.0f32; len];
-    for (i, px) in resized.as_raw().chunks_exact(3).enumerate() {
+    for (i, px) in pixels.as_raw().chunks_exact(3).enumerate() {
         let x = i % new_w as usize + pad_left as usize;
         let y = i / new_w as usize + pad_top as usize;
         let offset = y * s + x;
@@ -118,6 +124,20 @@ mod tests {
         assert_eq!(data[0], 0.0); // top padding
         assert_eq!(data[4], 30.0); // B at x=0,y=1
         assert_eq!(geo.to_source(3.0, 2.0), (3.0, 1.0));
+    }
+
+    #[test]
+    fn unchanged_dimensions_do_not_alter_pixels() {
+        let mut source = RgbImage::new(3, 3);
+        source.put_pixel(0, 0, Rgb([1, 2, 3]));
+        source.put_pixel(2, 2, Rgb([21, 22, 23]));
+        let (data, geo) = preprocess_rgb(&source, 3).unwrap();
+        assert_eq!(geo.resized_width, 3);
+        assert_eq!(geo.resized_height, 3);
+        assert_eq!(data[0], 3.0);
+        assert_eq!(data[8], 23.0);
+        assert_eq!(data[9], 2.0);
+        assert_eq!(data[18], 1.0);
     }
 
     #[test]

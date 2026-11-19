@@ -49,9 +49,12 @@ as on the original development laptop, but it is configurable in the UI.
 
 ## Privacy and interpretation
 
-Camera access starts only after an explicit click. Frames remain in
-process memory; the desktop UI receives numerical observations, not
-video frames. There is currently no remote telemetry implemented.
+Camera access starts only after an explicit click. Without preview,
+the desktop UI receives numerical observations only. When the user
+explicitly enables diagnostic preview, sampled JPEG frames are encoded
+in memory and transferred only to the local desktop WebView with synchronized
+face bounding boxes and landmarks. Disabling preview clears the image
+buffer; no video files or remote telemetry are implemented.
 
 A face in view is **not** proof of work or productivity. No face is
 **not** proof that a user is away. A camera error gives `unknown`,
@@ -71,5 +74,5 @@ terms before distributing packaged binaries.
 
 The camera preprocessing and YuNet postprocessing have unit tests,
 and the earlier one-frame CLI ran successfully on a Linux test machine.
-The new monitoring worker and desktop entrypoint still require an
-integration test on the target machine.
+The revised preview and timing instrumentation still require desktop
+integration tests on the target machine.

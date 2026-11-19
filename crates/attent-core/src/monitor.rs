@@ -2,6 +2,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
     thread::{self, JoinHandle},
@@ -13,6 +14,8 @@ use attent_camera::{AttentCamera, prepare_yunet};
 use attent_model::{DetectorConfig, YuNetDetector, YuNetModel};
 use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, Resolution};
 use serde::Serialize;
+
+use crate::preview::{FramePreview, encode_preview};
 
 const MODEL_SIDE: u32 = 640;
 
@@ -81,6 +84,15 @@ pub struct MonitorSnapshot {
     pub last_observed_at_ms: Option<u64>,
     pub last_analysis_ms: Option<f64>,
     pub last_capture_ms: Option<f64>,
+    pub last_decode_ms: Option<f64>,
+    pub last_preprocess_ms: Option<f64>,
+    pub last_inference_ms: Option<f64>,
+    pub last_postprocess_ms: Option<f64>,
+    pub last_preview_ms: Option<f64>,
+    /// Time between the beginnings of two sampled observations.
+    pub last_observation_period_ms: Option<f64>,
+    pub camera_format: Option<String>,
+    pub last_preview_error: Option<String>,
     pub last_error: Option<String>,
 }
 
@@ -92,6 +104,8 @@ struct Worker {
 /// Owns at most one monitoring thread. No camera access happens before start().
 pub struct Monitor {
     snapshot: Arc<Mutex<MonitorSnapshot>>,
+    preview: Arc<Mutex<Option<FramePreview>>>,
+    preview_enabled: Arc<AtomicBool>,
     worker: Mutex<Option<Worker>>,
 }
 
@@ -105,6 +119,8 @@ impl Monitor {
     pub fn new() -> Self {
         Self {
             snapshot: Arc::new(Mutex::new(MonitorSnapshot::default())),
+            preview: Arc::new(Mutex::new(None)),
+            preview_enabled: Arc::new(AtomicBool::new(false)),
             worker: Mutex::new(None),
         }
     }
@@ -114,6 +130,29 @@ impl Monitor {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Returns a preview only if the user explicitly enabled it and it is newer.
+    pub fn preview(&self, after_sequence: u64) -> Option<FramePreview> {
+        if !self.preview_enabled.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.preview
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .filter(|frame| frame.sequence > after_sequence)
+            .cloned()
+    }
+
+    /// Explicitly opt into sending sampled camera images to this local UI.
+    /// Disabling immediately drops the compressed frame retained in memory.
+    pub fn set_preview_enabled(&self, enabled: bool) {
+        let mut slot = self.preview.lock().unwrap_or_else(|p| p.into_inner());
+        self.preview_enabled.store(enabled, Ordering::Release);
+        if !enabled {
+            *slot = None;
+        }
     }
 
     /// Starts asynchronously. Device and model errors are reported via snapshot().
@@ -143,13 +182,17 @@ impl Monitor {
             };
         }
 
+        *self.preview.lock().unwrap_or_else(|p| p.into_inner()) = None;
         let (stop_tx, stop_rx) = mpsc::channel();
         let snapshot = Arc::clone(&self.snapshot);
+        let preview = Arc::clone(&self.preview);
+        let preview_enabled = Arc::clone(&self.preview_enabled);
 
         let handle = match thread::Builder::new()
             .name("attent-cv-monitor".into())
             .spawn(move || {
-                let result = observe(config, &snapshot, &stop_rx);
+                let result = observe(config, &snapshot, &preview, &preview_enabled, &stop_rx);
+                *preview.lock().unwrap_or_else(|p| p.into_inner()) = None;
                 let mut state = snapshot.lock().unwrap_or_else(|p| p.into_inner());
                 match result {
                     Ok(()) => {
@@ -204,6 +247,8 @@ impl Monitor {
 fn observe(
     config: MonitorConfig,
     shared: &Arc<Mutex<MonitorSnapshot>>,
+    shared_preview: &Arc<Mutex<Option<FramePreview>>>,
+    preview_enabled: &Arc<AtomicBool>,
     stop_rx: &Receiver<()>,
 ) -> Result<()> {
     if stop_rx.try_recv().is_ok() {
@@ -224,8 +269,11 @@ fn observe(
         if state.phase != MonitorPhase::Stopping {
             state.phase = MonitorPhase::Running;
         }
+        state.camera_format = Some(format!("{:?}", camera.format()));
     }
 
+    let mut previous_sample_start: Option<Instant> = None;
+    let mut last_preview_at: Option<Instant> = None;
     loop {
         // A stop request can arrive while the model/device is initializing.
         match stop_rx.try_recv() {
@@ -234,11 +282,49 @@ fn observe(
         }
 
         let begun = Instant::now();
+        let period_ms = previous_sample_start
+            .map(|previous| begun.duration_since(previous).as_secs_f64() * 1000.0);
+        previous_sample_start = Some(begun);
+
         let frame = camera.capture().context("capturing camera frame")?;
+        let preprocess_started = Instant::now();
         let input = prepare_yunet(&frame, MODEL_SIDE).context("preprocessing frame")?;
+        let preprocess_ms = preprocess_started.elapsed().as_secs_f64() * 1000.0;
+
+        let inference_started = Instant::now();
         let raw = model.infer(&input).context("running YuNet")?;
+        let inference_ms = inference_started.elapsed().as_secs_f64() * 1000.0;
+
+        let postprocess_started = Instant::now();
         let faces = detector.detect(&raw).context("decoding YuNet detections")?;
+        let postprocess_ms = postprocess_started.elapsed().as_secs_f64() * 1000.0;
         let analysis_ms = begun.elapsed().as_secs_f64() * 1000.0;
+
+        // A stop request may have arrived during a long model inference.
+        if !matches!(stop_rx.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+            break;
+        }
+
+        let mut preview_ms = None;
+        let mut preview_error = None;
+        if preview_enabled.load(Ordering::Relaxed)
+            && last_preview_at.is_none_or(|t| t.elapsed() >= Duration::from_millis(300))
+        {
+            let preview_started = Instant::now();
+            match encode_preview(&frame, &faces) {
+                Ok(preview) => {
+                    // Publish under the same lock used by opt-out; hiding the
+                    // preview cannot race with publication of a later frame.
+                    let mut slot = shared_preview.lock().unwrap_or_else(|p| p.into_inner());
+                    if preview_enabled.load(Ordering::Acquire) {
+                        *slot = Some(preview);
+                    }
+                }
+                Err(err) => preview_error = Some(err.to_string()),
+            }
+            preview_ms = Some(preview_started.elapsed().as_secs_f64() * 1000.0);
+            last_preview_at = Some(Instant::now());
+        }
 
         {
             let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
@@ -253,6 +339,13 @@ fn observe(
                 .ok()
                 .map(|d| d.as_millis().min(u64::MAX as u128) as u64);
             state.last_capture_ms = Some(frame.meta.capture_duration.as_secs_f64() * 1000.0);
+            state.last_decode_ms = Some(frame.meta.decode_duration.as_secs_f64() * 1000.0);
+            state.last_preprocess_ms = Some(preprocess_ms);
+            state.last_inference_ms = Some(inference_ms);
+            state.last_postprocess_ms = Some(postprocess_ms);
+            state.last_preview_ms = preview_ms;
+            state.last_observation_period_ms = period_ms;
+            state.last_preview_error = preview_error;
             state.last_analysis_ms = Some(analysis_ms);
             state.last_error = None;
         }
@@ -292,6 +385,16 @@ mod tests {
         assert!(config.validate().is_ok());
         config.sample_interval = Duration::from_secs(61);
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn preview_is_disabled_by_default() {
+        let monitor = Monitor::new();
+        assert!(monitor.preview(0).is_none());
+        monitor.set_preview_enabled(true);
+        assert!(monitor.preview(0).is_none());
+        monitor.set_preview_enabled(false);
+        assert!(monitor.preview(0).is_none());
     }
 
     #[test]
