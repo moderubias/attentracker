@@ -2,7 +2,7 @@
 
 use std::{
     path::PathBuf,
-    sync::Mutex,
+    sync::{Mutex, atomic::{AtomicU64, Ordering}},
     time::{Duration, Instant},
 };
 
@@ -12,6 +12,7 @@ use tracing::{error, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 
 const STALL_THRESHOLD: Duration = Duration::from_secs(5);
+static EXPECTED_INTERVAL_MS: AtomicU64 = AtomicU64::new(250);
 struct StatusWatchdog {
     frames: u64,
     last_progress: Instant,
@@ -27,9 +28,13 @@ fn check_status_progress(snapshot: &MonitorSnapshot) {
         *guard = None;
         return;
     }
+    let expected_interval_ms = EXPECTED_INTERVAL_MS.load(Ordering::Relaxed);
+    let adaptive_threshold = STALL_THRESHOLD.max(
+        Duration::from_millis(expected_interval_ms.saturating_mul(3)),
+    );
     match guard.as_mut() {
         Some(previous) if previous.frames == snapshot.frames_analyzed => {
-            if previous.last_progress.elapsed() >= STALL_THRESHOLD
+            if previous.last_progress.elapsed() >= adaptive_threshold
                 && previous.last_warning.is_none_or(|t| t.elapsed() >= STALL_THRESHOLD)
             {
                 previous.last_warning = Some(Instant::now());
@@ -37,6 +42,8 @@ fn check_status_progress(snapshot: &MonitorSnapshot) {
                     target: "attentracker_desktop::watchdog",
                     frames_analyzed = snapshot.frames_analyzed,
                     no_progress_ms = previous.last_progress.elapsed().as_secs_f64() * 1000.0,
+                    target_interval_ms = expected_interval_ms,
+                    stall_threshold_ms = adaptive_threshold.as_millis() as u64,
                     "monitor reports running but has not published a new observation"
                 );
             }
@@ -132,7 +139,10 @@ fn start_monitor(
         sample_interval: Duration::from_millis(interval_ms),
         model_path,
     }) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            EXPECTED_INTERVAL_MS.store(interval_ms, Ordering::Relaxed);
+            Ok(())
+        },
         Err(err) => {
             error!(target: "attentracker_desktop::ipc", error = %err, "start command failed");
             Err(err.to_string())
