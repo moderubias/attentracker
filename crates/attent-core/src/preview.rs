@@ -31,14 +31,24 @@ pub struct FramePreview {
 }
 
 pub fn encode_preview(frame: &CapturedFrame, faces: &[FaceDetection]) -> Result<FramePreview> {
-    let (width, height) = frame.rgb.dimensions();
+    encode_preview_rgb(&frame.rgb, frame.meta.sequence, faces)
+}
+
+/// Encode only the opt-in diagnostic image; accepts owned RGB data forwarded
+/// to a separate worker so JPEG compression does not block YuNet inference.
+pub fn encode_preview_rgb(
+    rgb: &image::RgbImage,
+    sequence: u64,
+    faces: &[FaceDetection],
+) -> Result<FramePreview> {
+    let (width, height) = rgb.dimensions();
     let mut jpeg = Vec::new();
     {
         let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY);
         if width > MAX_PREVIEW_WIDTH {
             let scaled_height = ((height as u64 * MAX_PREVIEW_WIDTH as u64 + width as u64 / 2)
                 / width as u64).max(1) as u32;
-            let scaled = resize(&frame.rgb, MAX_PREVIEW_WIDTH, scaled_height, FilterType::Triangle);
+            let scaled = resize(rgb, MAX_PREVIEW_WIDTH, scaled_height, FilterType::Triangle);
             encoder.encode(
                 scaled.as_raw(),
                 scaled.width(),
@@ -46,12 +56,12 @@ pub fn encode_preview(frame: &CapturedFrame, faces: &[FaceDetection]) -> Result<
                 ExtendedColorType::Rgb8,
             )?;
         } else {
-            encoder.encode(frame.rgb.as_raw(), width, height, ExtendedColorType::Rgb8)?;
+            encoder.encode(rgb.as_raw(), width, height, ExtendedColorType::Rgb8)?;
         }
     }
 
     Ok(FramePreview {
-        sequence: frame.meta.sequence,
+        sequence,
         width,
         height,
         data_url: format!("data:image/jpeg;base64,{}", STANDARD.encode(&jpeg)),
