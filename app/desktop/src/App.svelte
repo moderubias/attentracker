@@ -144,9 +144,9 @@
     return ms == null ? "—" : ms < 10 ? ms.toFixed(1) : ms.toFixed(0);
   }
 
+  // These stages run on the analyzer thread. Camera acquisition and JPEG
+  // decode now run concurrently and must not be added to ML pass latency.
   let stages = $derived([
-    { label: "Camera wait", ms: snapshot.lastCaptureMs },
-    { label: "MJPEG decode", ms: snapshot.lastDecodeMs },
     { label: "Tensor preparation", ms: snapshot.lastPreprocessMs },
     { label: "YuNet inference", ms: snapshot.lastInferenceMs },
     { label: "YuNet decode / NMS", ms: snapshot.lastPostprocessMs }
@@ -492,6 +492,14 @@
           <p class="detail-value">{fmt(snapshot.lastObservationPeriodMs)} <span>ms</span></p>
         </div>
         <div>
+          <p class="small-label">Camera acquisition · parallel</p>
+          <p class="detail-value">{fmt(snapshot.lastCaptureMs)} <span>ms</span></p>
+        </div>
+        <div>
+          <p class="small-label">MJPEG decode · parallel</p>
+          <p class="detail-value">{fmt(snapshot.lastDecodeMs)} <span>ms</span></p>
+        </div>
+        <div>
           <p class="small-label">Async preview JPEG encode</p>
           <p class="detail-value">{fmt(snapshot.lastPreviewMs)} <span>ms</span></p>
         </div>
@@ -501,7 +509,7 @@
         </div>
       </div>
     </div>
-    <p class="measurement-note">Estimated single-worker max throughput from the latest pass: {unthrottledEstimate == null ? "—" : unthrottledEstimate.toFixed(2)} FPS (not a guarantee). Inference runs sequentially; preview JPEG encoding is asynchronous. A requested sampling period is not a guaranteed FPS. Release builds may be faster than debug builds.</p>
+    <p class="measurement-note">Camera capture/decode run concurrently with model analysis; their durations are not additive. Estimated single-worker max throughput from the latest pass: {unthrottledEstimate == null ? "—" : unthrottledEstimate.toFixed(2)} FPS (not a guarantee). Inference runs sequentially; preview JPEG encoding is asynchronous. A requested sampling period is not a guaranteed FPS. Release builds may be faster than debug builds.</p>
   </section>
 
   {#if snapshot.lastError}
