@@ -120,6 +120,39 @@ fn monitor_status(monitor: State<'_, Monitor>) -> MonitorSnapshot {
     snapshot
 }
 
+/// The OpenCV 2026may dynamic graph is very slow at 640px with Tract on
+/// some CPUs. Prefer the original fixed graph for that mode, without
+/// modifying the explicit dynamic model selection for 160/320px.
+fn select_model_path_for_side(
+    side: u32,
+    configured: Option<PathBuf>,
+    local_fixed: &std::path::Path,
+    local_dynamic: &std::path::Path,
+) -> PathBuf {
+    if side == 640 {
+        if let Some(ref candidate) = configured {
+            if candidate.file_name() == Some(std::ffi::OsStr::new("yunet-dynamic.onnx")) {
+                let sibling = candidate.with_file_name("yunet.onnx");
+                if sibling.is_file() {
+                    return sibling;
+                }
+            }
+        } else if local_fixed.is_file() {
+            return local_fixed.to_path_buf();
+        }
+    }
+    configured.unwrap_or_else(|| {
+        if local_dynamic.is_file() {
+            local_dynamic.to_path_buf()
+        } else if local_fixed.is_file() {
+            local_fixed.to_path_buf()
+        } else {
+            // Retain source-checkout fallback used in the developer workflow.
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../models/yunet.onnx")
+        }
+    })
+}
+
 #[tauri::command]
 fn start_monitor(
     camera_index: u32,
@@ -128,18 +161,18 @@ fn start_monitor(
     monitor: State<'_, Monitor>,
 ) -> Result<(), String> {
     // A remote-built binary must not depend on the build host's source path.
-    // Prefer a checksum-verified dynamic-shape model from the current
-    // working directory if the developer has explicitly installed it.
-    let model_path = std::env::var_os("ATTENT_MODEL_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let dynamic = PathBuf::from("models/yunet-dynamic.onnx");
-            if dynamic.is_file() {
-                dynamic
-            } else {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../models/yunet.onnx")
-            }
-        });
+    let local_fixed = std::path::Path::new("models/yunet.onnx");
+    let local_dynamic = std::path::Path::new("models/yunet-dynamic.onnx");
+    let configured = std::env::var_os("ATTENT_MODEL_PATH").map(PathBuf::from);
+    let model_path = select_model_path_for_side(
+        model_input_side, configured, local_fixed, local_dynamic
+    );
+    info!(
+        target: "attentracker_desktop::ipc",
+        model_input_side,
+        model_path = %model_path.display(),
+        "selected ONNX model"
+    );
     info!(
         target: "attentracker_desktop::ipc",
         camera_index,
@@ -232,4 +265,43 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch Attentracker");
+}
+
+#[cfg(test)]
+mod model_path_tests {
+    use super::*;
+
+    #[test]
+    fn 320_keeps_explicit_dynamic_model() {
+        let selected = select_model_path_for_side(
+            320,
+            Some(PathBuf::from("/models/yunet-dynamic.onnx")),
+            std::path::Path::new("/models/yunet.onnx"),
+            std::path::Path::new("/models/yunet-dynamic.onnx"),
+        );
+        assert_eq!(selected, PathBuf::from("/models/yunet-dynamic.onnx"));
+    }
+
+    #[test]
+    fn 640_preserves_custom_explicit_model_path() {
+        let selected = select_model_path_for_side(
+            640,
+            Some(PathBuf::from("/models/custom-experiment.onnx")),
+            std::path::Path::new("/models/yunet.onnx"),
+            std::path::Path::new("/models/yunet-dynamic.onnx"),
+        );
+        assert_eq!(selected, PathBuf::from("/models/custom-experiment.onnx"));
+    }
+
+    #[test]
+    fn known_checked_in_fixed_model_is_preferred_at_640() {
+        let fixed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../models/yunet.onnx");
+        assert!(fixed.is_file());
+        let dynamic = fixed.with_file_name("yunet-dynamic.onnx");
+        let selected = select_model_path_for_side(
+            640, Some(dynamic), &fixed, &fixed.with_file_name("yunet-dynamic.onnx")
+        );
+        assert_eq!(selected, fixed);
+    }
 }
