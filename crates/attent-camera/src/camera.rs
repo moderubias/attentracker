@@ -1,10 +1,14 @@
 use std::time::{Duration, Instant, SystemTime};
 
+use anyhow::Context;
 use image::RgbImage;
 use nokhwa::{
-    native_api_backend, query, Camera, NokhwaError,
+    Camera, NokhwaError, native_api_backend,
     pixel_format::RgbFormat,
-    utils::{CameraFormat, CameraIndex, CameraInfo, FrameFormat, RequestedFormat, RequestedFormatType},
+    query,
+    utils::{
+        CameraFormat, CameraIndex, CameraInfo, FrameFormat, RequestedFormat, RequestedFormatType,
+    },
 };
 
 /// Owns the camera stream. Create it once; capture frames as needed.
@@ -42,8 +46,10 @@ pub struct CaptureMeta {
 }
 
 impl AttentCamera {
-    pub fn devices() -> Result<Vec<CameraInfo>, NokhwaError> {
-        query(native_api_backend()?)
+    pub fn devices() -> anyhow::Result<Vec<CameraInfo>> {
+        let backend = native_api_backend().context("No native camera backend available")?;
+
+        Ok(query(backend)?)
     }
 
     /// `format` must be advertised by the selected device.
@@ -51,7 +57,10 @@ impl AttentCamera {
         let request = RequestedFormat::new::<RgbFormat>(RequestedFormatType::Exact(format));
         let mut camera = Camera::new(index, request)?;
         camera.open_stream()?;
-        Ok(Self { camera, sequence: 0 })
+        Ok(Self {
+            camera,
+            sequence: 0,
+        })
     }
 
     pub fn device(&self) -> &CameraInfo {

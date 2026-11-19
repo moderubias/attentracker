@@ -1,8 +1,11 @@
 use std::time::{Instant, SystemTime};
 
-use anyhow::{Context, Result, ensure};
-use image::{RgbImage, imageops::{FilterType, resize}};
 use crate::camera::CapturedFrame;
+use anyhow::{Context, Result, ensure};
+use image::{
+    RgbImage,
+    imageops::{FilterType, resize},
+};
 
 /// Geometry of a resized, centered image inside a square model input.
 #[derive(Clone, Copy, Debug)]
@@ -62,7 +65,9 @@ fn preprocess_rgb(rgb: &RgbImage, side: u32) -> Result<(Vec<f32>, Letterbox)> {
 
     let s = side as usize;
     let plane_size = s.checked_mul(s).context("input dimensions overflow")?;
-    let len = plane_size.checked_mul(3).context("tensor dimensions overflow")?;
+    let len = plane_size
+        .checked_mul(3)
+        .context("tensor dimensions overflow")?;
 
     let resized = resize(rgb, new_w, new_h, FilterType::Triangle);
     let mut data = vec![0.0f32; len];
@@ -70,20 +75,23 @@ fn preprocess_rgb(rgb: &RgbImage, side: u32) -> Result<(Vec<f32>, Letterbox)> {
         let x = i % new_w as usize + pad_left as usize;
         let y = i / new_w as usize + pad_top as usize;
         let offset = y * s + x;
-        data[offset] = px[2] as f32;                  // B
-        data[plane_size + offset] = px[1] as f32;     // G
+        data[offset] = px[2] as f32; // B
+        data[plane_size + offset] = px[1] as f32; // G
         data[2 * plane_size + offset] = px[0] as f32; // R
     }
 
-    Ok((data, Letterbox {
-        source_width: w,
-        source_height: h,
-        input_side: side,
-        resized_width: new_w,
-        resized_height: new_h,
-        pad_left,
-        pad_top,
-    }))
+    Ok((
+        data,
+        Letterbox {
+            source_width: w,
+            source_height: h,
+            input_side: side,
+            resized_width: new_w,
+            resized_height: new_h,
+            pad_left,
+            pad_top,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -107,8 +115,8 @@ mod tests {
         let (data, geo) = preprocess_rgb(&source, 4).unwrap();
         assert_eq!((geo.resized_width, geo.resized_height), (4, 2));
         assert_eq!((geo.pad_left, geo.pad_top), (0, 1));
-        assert_eq!(data[0], 0.0);           // top padding
-        assert_eq!(data[4], 30.0);          // B at x=0,y=1
+        assert_eq!(data[0], 0.0); // top padding
+        assert_eq!(data[4], 30.0); // B at x=0,y=1
         assert_eq!(geo.to_source(3.0, 2.0), (3.0, 1.0));
     }
 
@@ -118,4 +126,3 @@ mod tests {
         assert!(preprocess_rgb(&source, 0).is_err());
     }
 }
-
