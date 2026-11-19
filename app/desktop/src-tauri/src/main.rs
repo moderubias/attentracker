@@ -124,6 +124,7 @@ fn monitor_status(monitor: State<'_, Monitor>) -> MonitorSnapshot {
 fn start_monitor(
     camera_index: u32,
     interval_ms: u64,
+    model_input_side: u32,
     monitor: State<'_, Monitor>,
 ) -> Result<(), String> {
     // A remote-built binary must not depend on the build host's source path.
@@ -136,11 +137,13 @@ fn start_monitor(
         target: "attentracker_desktop::ipc",
         camera_index,
         interval_ms,
+        model_input_side,
         "Start monitoring clicked"
     );
     match monitor.start(MonitorConfig {
         camera_index,
         sample_interval: Duration::from_millis(interval_ms),
+        model_input_side,
         model_path,
     }) {
         Ok(()) => {
