@@ -48,13 +48,30 @@ ssh kiyoromi '
   CLANG_LIB="$(find /usr/lib -name libclang.so -print -quit)"
   test -n "$CLANG_LIB"
   export LIBCLANG_PATH="$(dirname "$CLANG_LIB")"
-  CARGO_BUILD_JOBS=2 cargo build --release --locked \
+  CARGO_BUILD_JOBS=2 cargo build --release \
+    --features tauri/custom-protocol \
     --manifest-path app/desktop/src-tauri/Cargo.toml
 '
 ```
 
 Keep server `target/` for incremental rebuilding. Never run Cargo
 locally if avoiding the laptop compilation load is the goal.
+
+**Why `--features tauri/custom-protocol` is necessary:** plain
+`cargo build --release` does not activate Tauri's production asset
+protocol. Its binary can retain the `devUrl` from
+`tauri.conf.json` and show "Could not connect to 127.0.0.1" when
+Vite is absent. Tauri CLI `tauri build` activates this production
+feature automatically; when using Cargo directly, supply it explicitly.
+A `release` profile alone does not select the production asset origin.
+Do not add `tauri/custom-protocol` as an unconditional dependency
+feature, because that can interfere with `tauri dev`.
+
+This performance branch may have stale checked-in Cargo lockfiles,
+so this particular command deliberately omits `--locked`. If Cargo
+resolves the lockfile, keep its update on the server until the
+project's lockfiles are reconciled. The benchmark uses no extra
+third-party libraries compared with the existing source.
 
 ## 3. Transfer the release executable and run it without Vite
 
@@ -67,8 +84,9 @@ rsync -av --progress \
 ldd app/desktop/src-tauri/target/release/attentracker-desktop | grep 'not found' || true
 ```
 
-The release Tauri executable embeds the static Vite-built UI. The
-binary requires **no Vite process**, although Linux must have compatible
+When compiled with `tauri/custom-protocol`, the release Tauri
+executable embeds the static Vite-built UI. The binary requires **no
+running Vite process**, although Linux must have compatible
 WebKitGTK/GTK system libraries. If `ldd` reports missing libraries,
 resolve that before benchmarking.
 
