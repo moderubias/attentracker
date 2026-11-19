@@ -63,6 +63,18 @@ impl AttentCamera {
         })
     }
 
+    /// Negotiates the nearest decodable format instead of requiring an exact match.
+    /// This still requires the device to support the requested pixel encoding.
+    pub fn new_preferred(index: CameraIndex, format: CameraFormat) -> Result<Self, NokhwaError> {
+        let request = RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(format));
+        let mut camera = Camera::new(index, request)?;
+        camera.open_stream()?;
+        Ok(Self {
+            camera,
+            sequence: 0,
+        })
+    }
+
     pub fn device(&self) -> &CameraInfo {
         self.camera.info()
     }
