@@ -1,15 +1,109 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
-use attent_core::{FramePreview, Monitor, MonitorConfig, MonitorSnapshot};
+use attent_core::{FramePreview, Monitor, MonitorConfig, MonitorPhase, MonitorSnapshot};
 use tauri::State;
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 use tracing_subscriber::EnvFilter;
+
+const STALL_THRESHOLD: Duration = Duration::from_secs(5);
+struct StatusWatchdog {
+    frames: u64,
+    last_progress: Instant,
+    last_warning: Option<Instant>,
+}
+static STATUS_WATCHDOG: Mutex<Option<StatusWatchdog>> = Mutex::new(None);
+
+fn check_status_progress(snapshot: &MonitorSnapshot) {
+    let Ok(mut guard) = STATUS_WATCHDOG.lock() else {
+        return;
+    };
+    if snapshot.phase != MonitorPhase::Running {
+        *guard = None;
+        return;
+    }
+    match guard.as_mut() {
+        Some(previous) if previous.frames == snapshot.frames_analyzed => {
+            if previous.last_progress.elapsed() >= STALL_THRESHOLD
+                && previous.last_warning.is_none_or(|t| t.elapsed() >= STALL_THRESHOLD)
+            {
+                previous.last_warning = Some(Instant::now());
+                warn!(
+                    target: "attentracker_desktop::watchdog",
+                    frames_analyzed = snapshot.frames_analyzed,
+                    no_progress_ms = previous.last_progress.elapsed().as_secs_f64() * 1000.0,
+                    "monitor reports running but has not published a new observation"
+                );
+            }
+        }
+        _ => {
+            *guard = Some(StatusWatchdog {
+                frames: snapshot.frames_analyzed,
+                last_progress: Instant::now(),
+                last_warning: None,
+            });
+        }
+    }
+}
+
+/// Aggregate-only frontend metrics. Never contains images, pixels or camera payloads.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FrontendWindow {
+    polls: u32,
+    busy_skips: u32,
+    poll_errors: u32,
+    preview_requests: u32,
+    preview_updates: u32,
+    preview_no_change: u32,
+    preview_errors: u32,
+    rendered_images: u32,
+    status_latency_sum_ms: f64,
+    status_latency_max_ms: f64,
+    preview_latency_sum_ms: f64,
+    preview_latency_max_ms: f64,
+    preview_bytes_total: u64,
+    last_received_sequence: u64,
+    last_rendered_sequence: u64,
+    preview_enabled: bool,
+    phase: String,
+}
+
+#[tauri::command]
+fn report_frontend_telemetry(report: FrontendWindow) {
+    info!(
+        target: "attentracker_desktop::frontend",
+        event = "frontend_window",
+        phase = %report.phase,
+        preview_enabled = report.preview_enabled,
+        polls = report.polls,
+        busy_skips = report.busy_skips,
+        poll_errors = report.poll_errors,
+        preview_requests = report.preview_requests,
+        preview_updates = report.preview_updates,
+        preview_no_change = report.preview_no_change,
+        preview_errors = report.preview_errors,
+        rendered_images = report.rendered_images,
+        status_ipc_avg_ms = report.status_latency_sum_ms / f64::from(report.polls.max(1)),
+        status_ipc_max_ms = report.status_latency_max_ms,
+        preview_ipc_avg_ms = report.preview_latency_sum_ms / f64::from(report.preview_requests.max(1)),
+        preview_ipc_max_ms = report.preview_latency_max_ms,
+        preview_payload_chars = report.preview_bytes_total,
+        last_received_sequence = report.last_received_sequence,
+        last_rendered_sequence = report.last_rendered_sequence,
+        "frontend polling, image rendering and Tauri IPC summary"
+    );
+}
 
 #[tauri::command]
 fn monitor_status(monitor: State<'_, Monitor>) -> MonitorSnapshot {
     let snapshot = monitor.snapshot();
+    check_status_progress(&snapshot);
     trace!(
         target: "attentracker_desktop::ipc",
         phase = ?snapshot.phase,
@@ -64,6 +158,12 @@ fn set_preview_enabled(enabled: bool, monitor: State<'_, Monitor>) {
 #[tauri::command]
 fn monitor_preview(after_sequence: u64, monitor: State<'_, Monitor>) -> Option<FramePreview> {
     let image = monitor.preview(after_sequence);
+    trace!(
+        target: "attentracker_desktop::ipc",
+        after_sequence,
+        returned_preview = image.is_some(),
+        "preview polled"
+    );
     if let Some(ref frame) = image {
         trace!(
             target: "attentracker_desktop::ipc",
@@ -104,6 +204,7 @@ fn main() {
             stop_monitor,
             set_preview_enabled,
             monitor_preview,
+            report_frontend_telemetry,
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch Attentracker");
