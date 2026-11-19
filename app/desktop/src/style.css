@@ -73,6 +73,11 @@ h1 { font-size: clamp(27px, 3vw, 36px); letter-spacing: -.055em; font-weight: 65
 .config-fields label { min-width: 0; display: flex; flex-direction: column; gap: 9px; font-size: 11px; font-weight: 600; color: #6c796f; }
 .config-fields label span { font-weight: 400; color: #a2aaa3; }
 .config-fields input { width: 100%; min-width: 0; border: 1px solid #dde3dc; padding: 11px 12px; border-radius: 9px; font-size: 13px; color: #26342b; background: #fff; outline-color: #719b79; }
+.rate-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 12px; }
+.rate-presets button { background: #f4f6f2; color: #65766c; border: 1px solid #e1e6df; padding: 9px 5px; border-radius: 8px; font-size: 10px; font-weight: 650; }
+.rate-presets button.selected { background: #e1eee4; color: #2b5d3b; border-color: #9ec8aa; }
+.rate-presets button:hover:enabled { background: #e8f0e8; }
+.rate-hint { margin: 8px 0 0; font-size: 10px; line-height: 1.45; color: #8a968d; }
 .session-actions { display: grid; grid-template-columns: 1fr auto; gap: 9px; margin-top: 16px; }
 .session-actions button { padding: 12px 15px; border-radius: 10px; font-size: 12px; font-weight: 650; white-space: nowrap; border: 1px solid #dfe5df; }
 .start-button { color: white; background: #2d523e; border-color: #2d523e !important; }
