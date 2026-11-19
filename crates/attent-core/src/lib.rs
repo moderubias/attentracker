@@ -1,6 +1,7 @@
 mod diagnostics;
 mod monitor;
 mod preview;
+mod preview_worker;
 
 pub use preview::{FramePreview, FaceOverlay};
 

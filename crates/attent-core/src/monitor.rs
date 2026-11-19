@@ -2,7 +2,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
     thread::{self, JoinHandle},
@@ -17,14 +17,14 @@ use serde::Serialize;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::diagnostics::{DiagnosticsWindow, FrameTimings, scheduler_gap_ms};
-use crate::preview::{FramePreview, encode_preview};
-
-const MODEL_SIDE: u32 = 640;
+use crate::preview::FramePreview;
+use crate::preview_worker::{PreviewJob, PreviewWorker, SubmitResult};
 
 #[derive(Clone, Debug)]
 pub struct MonitorConfig {
     pub camera_index: u32,
     pub sample_interval: Duration,
+    pub model_input_side: u32,
     pub model_path: PathBuf,
 }
 
@@ -33,6 +33,10 @@ impl MonitorConfig {
         ensure!(
             self.sample_interval <= Duration::from_secs(60),
             "sample_interval must be between 0 (unthrottled) and 60 s"
+        );
+        ensure!(
+            matches!(self.model_input_side, 160 | 320 | 640),
+            "model_input_side must be 160, 320, or 640"
         );
         ensure!(
             !self.model_path.as_os_str().is_empty(),
@@ -108,6 +112,7 @@ pub struct Monitor {
     snapshot: Arc<Mutex<MonitorSnapshot>>,
     preview: Arc<Mutex<Option<FramePreview>>>,
     preview_enabled: Arc<AtomicBool>,
+    preview_generation: Arc<AtomicU64>,
     worker: Mutex<Option<Worker>>,
 }
 
@@ -123,6 +128,7 @@ impl Monitor {
             snapshot: Arc::new(Mutex::new(MonitorSnapshot::default())),
             preview: Arc::new(Mutex::new(None)),
             preview_enabled: Arc::new(AtomicBool::new(false)),
+            preview_generation: Arc::new(AtomicU64::new(0)),
             worker: Mutex::new(None),
         }
     }
@@ -160,9 +166,13 @@ impl Monitor {
     /// Disabling immediately drops the compressed frame retained in memory.
     pub fn set_preview_enabled(&self, enabled: bool) {
         let mut slot = self.preview.lock().unwrap_or_else(|p| p.into_inner());
+        self.preview_generation.fetch_add(1, Ordering::AcqRel);
         self.preview_enabled.store(enabled, Ordering::Release);
         if !enabled {
             *slot = None;
+            let mut state = self.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+            state.last_preview_ms = None;
+            state.last_preview_error = None;
         }
         info!(
             target: "attent_core::lifecycle",
@@ -178,6 +188,7 @@ impl Monitor {
             target: "attent_core::lifecycle",
             camera_index = config.camera_index,
             target_interval_ms = config.sample_interval.as_millis() as u64,
+            model_input_side = config.model_input_side,
             "monitor start requested"
         );
         let mut worker = self
@@ -210,11 +221,12 @@ impl Monitor {
         let snapshot = Arc::clone(&self.snapshot);
         let preview = Arc::clone(&self.preview);
         let preview_enabled = Arc::clone(&self.preview_enabled);
+        let preview_generation = Arc::clone(&self.preview_generation);
 
         let handle = match thread::Builder::new()
             .name("attent-cv-monitor".into())
             .spawn(move || {
-                let result = observe(config, &snapshot, &preview, &preview_enabled, &stop_rx);
+                let result = observe(config, &snapshot, &preview, &preview_enabled, &preview_generation, &stop_rx);
                 *preview.lock().unwrap_or_else(|p| p.into_inner()) = None;
                 let mut state = snapshot.lock().unwrap_or_else(|p| p.into_inner());
                 match result {
@@ -231,7 +243,7 @@ impl Monitor {
                     Err(err) => {
                         error!(
                             target: "attent_core::lifecycle",
-                            error = %err,
+                            error = %format!("{err:#}"),
                             frames_analyzed = state.frames_analyzed,
                             "monitor worker failed"
                         );
@@ -285,6 +297,7 @@ fn observe(
     shared: &Arc<Mutex<MonitorSnapshot>>,
     shared_preview: &Arc<Mutex<Option<FramePreview>>>,
     preview_enabled: &Arc<AtomicBool>,
+    preview_generation: &Arc<AtomicU64>,
     stop_rx: &Receiver<()>,
 ) -> Result<()> {
     if stop_rx.try_recv().is_ok() {
@@ -296,13 +309,18 @@ fn observe(
         "initializing YuNet and camera"
     );
     let load_started = Instant::now();
-    let model = YuNetModel::load(&config.model_path)
-        .with_context(|| format!("loading YuNet at {}", config.model_path.display()))?;
+    let model = YuNetModel::load_for_side(&config.model_path, config.model_input_side)
+        .with_context(|| format!(
+            "loading YuNet at {} for {}x{} input; if changing input resolution, fetch the upstream dynamic model using bash scripts/fetch-yunet-dynamic.sh and set ATTENT_MODEL_PATH to models/yunet-dynamic.onnx",
+            config.model_path.display(),
+            config.model_input_side,
+            config.model_input_side
+        ))?;
     let model_load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
     let detector_config = DetectorConfig::default();
     info!(
         target: "attent_core::lifecycle",
-        model_input_side = MODEL_SIDE,
+        model_input_side = config.model_input_side,
         score_threshold = detector_config.score_threshold,
         nms_threshold = detector_config.nms_threshold,
         top_k = detector_config.top_k,
@@ -332,6 +350,13 @@ fn observe(
         }
         state.camera_format = Some(format!("{:?}", camera.format()));
     }
+
+    let preview_worker = PreviewWorker::spawn(
+        Arc::clone(shared_preview),
+        Arc::clone(preview_enabled),
+        Arc::clone(preview_generation),
+        Arc::clone(shared),
+    )?;
 
     let mut previous_sample_start: Option<Instant> = None;
     let mut previous_receive_tick: Option<Instant> = None;
@@ -364,7 +389,7 @@ fn observe(
             previous_driver_timestamp = frame.meta.driver_timestamp;
         }
         let preprocess_started = Instant::now();
-        let input = prepare_yunet(&frame, MODEL_SIDE).context("preprocessing frame")?;
+        let input = prepare_yunet(&frame, config.model_input_side).context("preprocessing frame")?;
         let preprocess_ms = preprocess_started.elapsed().as_secs_f64() * 1000.0;
 
         let inference_started = Instant::now();
@@ -381,44 +406,48 @@ fn observe(
             break;
         }
 
-        let mut preview_ms = None;
-        let mut preview_error = None;
-        let mut preview_encoded = false;
-        let preview_requested = preview_enabled.load(Ordering::Relaxed)
+        let mut preview_dispatch_ms = None;
+        let mut preview_error_occurred = false;
+        let mut preview_enqueued = false;
+        let preview_requested = preview_enabled.load(Ordering::Acquire)
             && last_preview_at.is_none_or(|t| t.elapsed() >= Duration::from_millis(300));
         if preview_requested {
-            let preview_started = Instant::now();
-            match encode_preview(&frame, &faces) {
-                Ok(preview) => {
-                    preview_encoded = true;
+            let dispatch_started = Instant::now();
+            let job = PreviewJob {
+                rgb: frame.rgb.clone(),
+                sequence: frame.meta.sequence,
+                faces: faces.clone(),
+                generation: preview_generation.load(Ordering::Acquire),
+            };
+            match preview_worker.submit(job) {
+                Ok(SubmitResult::Queued) => {
+                    preview_enqueued = true;
                     trace!(
                         target: "attent_core::preview",
-                        sequence = preview.sequence,
-                        encoded_bytes = preview.data_url.len(),
-                        overlays = preview.faces.len(),
-                        "JPEG preview encoded"
+                        sequence = frame.meta.sequence,
+                        "preview dispatched to asynchronous encoder"
                     );
-                    // Publish under the same lock used by opt-out; hiding the
-                    // preview cannot race with publication of a later frame.
-                    let mut slot = shared_preview.lock().unwrap_or_else(|p| p.into_inner());
-                    if preview_enabled.load(Ordering::Acquire) {
-                        *slot = Some(preview);
-                    }
+                }
+                Ok(SubmitResult::Full) => {
+                    trace!(
+                        target: "attent_core::preview",
+                        sequence = frame.meta.sequence,
+                        "preview queue full; stale diagnostic frame dropped"
+                    );
                 }
                 Err(err) => {
+                    preview_error_occurred = true;
                     warn!(
                         target: "attent_core::preview",
                         error = %err,
-                        "JPEG preview encoding failed"
+                        "preview encoder unavailable"
                     );
-                    preview_error = Some(err.to_string());
-                },
+                }
             }
-            preview_ms = Some(preview_started.elapsed().as_secs_f64() * 1000.0);
+            preview_dispatch_ms = Some(dispatch_started.elapsed().as_secs_f64() * 1000.0);
             last_preview_at = Some(Instant::now());
         }
 
-        let preview_error_occurred = preview_error.is_some();
         let snapshot_lock_started = Instant::now();
         let snapshot_lock_wait_ms;
         {
@@ -439,9 +468,8 @@ fn observe(
             state.last_preprocess_ms = Some(preprocess_ms);
             state.last_inference_ms = Some(inference_ms);
             state.last_postprocess_ms = Some(postprocess_ms);
-            state.last_preview_ms = preview_ms;
+            // Actual JPEG encoding timing/errors are published by the preview worker.
             state.last_observation_period_ms = period_ms;
-            state.last_preview_error = preview_error;
             state.last_analysis_ms = Some(analysis_ms);
             state.last_error = None;
         }
@@ -461,13 +489,13 @@ fn observe(
             snapshot_lock_wait_ms,
             driver_timestamp_unchanged,
             preview_requested,
-            preview_encoded,
+            preview_enqueued,
             preview_error: preview_error_occurred,
             decode_ms: frame.meta.decode_duration.as_secs_f64() * 1000.0,
             preprocess_ms,
             inference_ms,
             postprocess_ms,
-            preview_ms: preview_ms.unwrap_or(0.0),
+            preview_ms: preview_dispatch_ms.unwrap_or(0.0),
             pipeline_ms: analysis_ms,
             iteration_ms,
             period_ms,
@@ -487,13 +515,13 @@ fn observe(
             driver_timestamp_available = frame.meta.driver_timestamp.is_some(),
             driver_timestamp_unchanged,
             preview_requested,
-            preview_encoded,
+            preview_enqueued,
             preview_error = timings.preview_error,
             decode_ms = timings.decode_ms,
             preprocess_ms = timings.preprocess_ms,
             inference_ms = timings.inference_ms,
             postprocess_ms = timings.postprocess_ms,
-            preview_ms = timings.preview_ms,
+            preview_dispatch_ms = timings.preview_ms,
             pipeline_ms = timings.pipeline_ms,
             iteration_ms = timings.iteration_ms,
             observed_period_ms = timings.period_ms.unwrap_or(0.0),
@@ -506,13 +534,19 @@ fn observe(
         stats.report_if_due(
             config.sample_interval.as_millis() as u64,
             preview_enabled.load(Ordering::Relaxed),
+            config.model_input_side,
         );
         match stop_rx.recv_timeout(remaining) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
-    stats.report("stopped", config.sample_interval.as_millis() as u64, preview_enabled.load(Ordering::Relaxed));
+    stats.report(
+        "stopped",
+        config.sample_interval.as_millis() as u64,
+        preview_enabled.load(Ordering::Relaxed),
+        config.model_input_side,
+    );
     Ok(())
 }
 
@@ -533,6 +567,7 @@ mod tests {
         let mut config = MonitorConfig {
             camera_index: 1,
             sample_interval: Duration::from_millis(250),
+            model_input_side: 320,
             model_path: PathBuf::from("models/yunet.onnx"),
         };
         assert!(config.validate().is_ok());
@@ -543,6 +578,9 @@ mod tests {
         config.sample_interval = Duration::from_secs(60);
         assert!(config.validate().is_ok());
         config.sample_interval = Duration::from_secs(61);
+        assert!(config.validate().is_err());
+        config.sample_interval = Duration::ZERO;
+        config.model_input_side = 192;
         assert!(config.validate().is_err());
     }
 

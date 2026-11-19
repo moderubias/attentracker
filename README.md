@@ -23,6 +23,13 @@ planned features, not claims about what the program currently detects.
 - `crates/attent-bin`: one-frame diagnostic command.
 - `app/desktop`: optional Tauri 2 desktop prototype (separate Cargo workspace).
 
+## Throughput experiments
+
+The experimental desktop branch adds selectable 160/320/640 model
+input, an asynchronous opt-in JPEG preview encoder, and a server-built
+release benchmark procedure. **20 analyzed FPS has not yet been confirmed
+on the target laptop.** See [performance.md](docs/performance.md).
+
 ## Run
 
 ```sh

@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   core:
     runs-on: ubuntu-24.04
@@ -17,7 +21,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libclang-dev clang libv4l-dev nasm
       - name: Format sources before compilation
         run: cargo fmt --all
-      - name: Compile and test workspace
+      - name: Fetch checksum-pinned dynamic YuNet for integration tests
+        run: bash scripts/fetch-yunet-dynamic.sh
+      - name: Compile and test workspace (160/320/640 ONNX inference)
+        env:
+          ATTENT_TEST_DYNAMIC_YUNET: ${{ github.workspace }}/models/yunet-dynamic.onnx
         run: cargo test --workspace
 
   desktop:
@@ -40,6 +48,12 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Desktop Rust compile
+      - name: Desktop Rust compile (development)
         working-directory: app/desktop/src-tauri
         run: cargo check
+      - name: Desktop production asset protocol compile
+        working-directory: app/desktop/src-tauri
+        run: cargo check --release --features tauri/custom-protocol
+      - name: Desktop unit tests (model path selection)
+        working-directory: app/desktop/src-tauri
+        run: cargo test --bin attentracker-desktop

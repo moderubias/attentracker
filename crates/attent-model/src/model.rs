@@ -9,6 +9,7 @@ use tract::prelude::*;
 
 pub struct YuNetModel {
     runtime: Runnable,
+    input_side: u32,
 }
 
 #[derive(Debug)]
@@ -28,20 +29,39 @@ pub struct YuNetOutput {
 
 impl YuNetModel {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        Self::load_for_side(path, 640)
+    }
+
+    /// Specialize the ONNX graph before Tract compiles its execution plan.
+    /// YuNet output head sizes depend on the input side, so preprocessing and
+    /// postprocessing must use exactly the same value.
+    pub fn load_for_side(path: impl AsRef<Path>, input_side: u32) -> Result<Self> {
+        ensure!(
+            matches!(input_side, 160 | 320 | 640),
+            "unsupported YuNet input side: {input_side}"
+        );
         let begun = Instant::now();
-        let runtime = tract::onnx()?.load(path)?.into_model()?.into_runnable()?;
+        let mut model = tract::onnx()?.load(path)?;
+        // The upstream dynamic-shape YuNet needs concrete dimensions at
+        // Tract plan compilation time, including the 640x640 baseline.
+        // The old, fixed-640 graph cannot be changed merely by setting
+        // its input fact: intermediate Conv shapes are hard-coded.
+        let fact = format!("1,3,{input_side},{input_side},f32");
+        model.set_input_fact(0, fact.as_str())?;
+        let runtime = model.into_model()?.into_runnable()?;
         tracing::info!(
             target: "attent_model::runtime",
             model = "YuNet",
+            input_side,
             load_ms = begun.elapsed().as_secs_f64() * 1000.0,
             "ONNX model loaded"
         );
-        Ok(Self { runtime })
+        Ok(Self { runtime, input_side })
     }
 
     pub fn infer(&self, input: &YuNetInput) -> Result<YuNetOutput> {
         ensure!(
-            input.shape == [1, 3, 640, 640],
+            input.shape == [1, 3, self.input_side as usize, self.input_side as usize],
             "Unexpected YuNet input shape: {:?}",
             input.shape
         );
@@ -132,5 +152,53 @@ impl YuNetOutput {
         }
 
         Ok(best)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_yunet_supports_all_selected_sizes() {
+        // CI explicitly supplies this path after fetching and checksum-
+        // verifying the upstream model. Offline `cargo test` remains usable.
+        let Some(path) = std::env::var_os("ATTENT_TEST_DYNAMIC_YUNET") else {
+            eprintln!("dynamic YuNet integration test skipped (set ATTENT_TEST_DYNAMIC_YUNET)");
+            return;
+        };
+        let path = Path::new(&path);
+        for side in [160_u32, 320, 640] {
+            let model = YuNetModel::load_for_side(path, side)
+                .unwrap_or_else(|err| panic!("load dynamic YuNet at {side}px failed: {err:#}"));
+            let input = YuNetInput {
+                data: vec![0.0_f32; 3 * side as usize * side as usize],
+                shape: [1, 3, side as usize, side as usize],
+                transform: Letterbox {
+                    source_width: 640,
+                    source_height: 480,
+                    input_side: side,
+                    resized_width: side,
+                    resized_height: side * 3 / 4,
+                    pad_left: 0,
+                    pad_top: side / 8,
+                },
+                frame_sequence: 1,
+                received_at: SystemTime::UNIX_EPOCH,
+                received_tick: Instant::now(),
+            };
+            let output = model.infer(&input)
+                .unwrap_or_else(|err| panic!("infer dynamic YuNet at {side}px failed: {err:#}"));
+            assert_eq!(output.tensors.len(), 12);
+            assert_eq!(output.tensors[0].shape, vec![1, (side as usize / 8).pow(2), 1]);
+            assert_eq!(output.tensors[6].shape, vec![1, (side as usize / 8).pow(2), 4]);
+        }
+    }
+
+    #[test]
+    fn fixed_640_yunet_still_works_at_original_resolution() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models/yunet.onnx");
+        let model = YuNetModel::load(path).expect("the original 640px model must remain supported");
+        assert_eq!(model.input_side, 640);
     }
 }
