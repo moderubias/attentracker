@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import ActivityInsights from "./ActivityInsights.svelte";
+  import AppearanceSettings from "./AppearanceSettings.svelte";
 
   type Phase = "stopped" | "starting" | "running" | "stopping" | "error";
   type Presence = "unknown" | "no_face" | "face_present" | "multiple_faces";
@@ -314,8 +316,8 @@
   <div class="page-heading">
     <div>
       <p class="eyebrow">01 / Observation</p>
-      <h1>Camera diagnostics</h1>
-      <p class="subtitle">A smooth opt-in live view with the most recent detections. Overlays may lag behind the camera image.</p>
+      <h1>Observation workspace</h1>
+      <p class="subtitle">Local-first observation, provisional activity insights and model performance. Overlays may lag behind the camera image.</p>
     </div>
     <span class="privacy-mark">LOCAL ONLY <span aria-hidden="true">●</span></span>
   </div>
@@ -466,10 +468,20 @@
     </aside>
   </div>
 
+  <ActivityInsights
+    phase={snapshot.phase}
+    activityState={snapshot.activityState}
+    presence={snapshot.presence}
+    framesAnalyzed={snapshot.framesAnalyzed}
+    lastObservedAtMs={snapshot.lastObservedAtMs}
+  />
+
+  <AppearanceSettings />
+
   <section class="panel performance-panel" aria-label="Performance profiler">
     <div class="performance-heading">
       <div>
-        <p class="eyebrow">02 / Profiler</p>
+        <p class="eyebrow">04 / Profiler</p>
         <h2>Pipeline latency</h2>
       </div>
       <span class="total-latency">{fmt(snapshot.lastAnalysisMs)} <span>ms / analyzed frame</span></span>
