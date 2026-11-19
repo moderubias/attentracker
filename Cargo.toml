@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/attent-activity",
+    "crates/attent-bin",
+    "crates/attent-camera",
+    "crates/attent-model"
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Tensor operations
+kernix = "0.13"
+
+# Rust ONNX Inference
+# tract-onnx = "0.23.10"
+tract = "0.23.10"
+ndarray = "0.17"
+
+# Cross-platform camera access
+nokhwa = { version = "0.10.11", features = ["input-native"] }
+
+# Image preprocessing
+image = { version = "0.25", default-features = false }
+
+# Applications
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
