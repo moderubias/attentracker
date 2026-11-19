@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use attent_core::{Monitor, MonitorConfig, MonitorSnapshot};
+use attent_core::{FramePreview, Monitor, MonitorConfig, MonitorSnapshot};
 use tauri::State;
 
 #[tauri::command]
@@ -32,6 +32,17 @@ fn stop_monitor(monitor: State<'_, Monitor>) -> Result<(), String> {
     monitor.stop().map_err(|err| err.to_string())
 }
 
+/// Camera images leave the Rust worker only after an explicit UI opt-in.
+#[tauri::command]
+fn set_preview_enabled(enabled: bool, monitor: State<'_, Monitor>) {
+    monitor.set_preview_enabled(enabled);
+}
+
+#[tauri::command]
+fn monitor_preview(after_sequence: u64, monitor: State<'_, Monitor>) -> Option<FramePreview> {
+    monitor.preview(after_sequence)
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Monitor::new())
@@ -39,6 +50,8 @@ fn main() {
             monitor_status,
             start_monitor,
             stop_monitor,
+            set_preview_enabled,
+            monitor_preview,
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch Attentracker");
