@@ -272,7 +272,7 @@ mod model_path_tests {
     use super::*;
 
     #[test]
-    fn 320_keeps_explicit_dynamic_model() {
+    fn dynamic_model_is_preserved_at_320() {
         let selected = select_model_path_for_side(
             320,
             Some(PathBuf::from("/models/yunet-dynamic.onnx")),
@@ -283,7 +283,7 @@ mod model_path_tests {
     }
 
     #[test]
-    fn 640_preserves_custom_explicit_model_path() {
+    fn custom_model_path_is_preserved_at_640() {
         let selected = select_model_path_for_side(
             640,
             Some(PathBuf::from("/models/custom-experiment.onnx")),
