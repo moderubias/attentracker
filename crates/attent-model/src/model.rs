@@ -44,7 +44,7 @@ impl YuNetModel {
         let mut model = tract::onnx()?.load(path)?;
         if input_side != 640 {
             let side = input_side as usize;
-            model.set_input_fact(0, f32::fact([1, 3, side, side]).into())?;
+            model.set_input_fact(0, tract::InferenceFact::dt_shape(DatumType::F32, [1, 3, side, side]))?;
         }
         let runtime = model.into_model()?.into_runnable()?;
         tracing::info!(
