@@ -110,3 +110,17 @@ mod tests {
         assert_eq!(c.observe(now + Duration::from_secs(9), Some(0), input), ActivityState::Away);
     }
 }
+
+#[cfg(target_os = "linux")]
+mod wayland_idle;
+#[cfg(target_os = "linux")]
+pub use wayland_idle::InputIdleMonitor;
+
+#[cfg(not(target_os = "linux"))]
+pub struct InputIdleMonitor;
+#[cfg(not(target_os = "linux"))]
+impl InputIdleMonitor {
+    pub fn start() -> Self { Self }
+    pub fn idle_for(&self) -> Option<Duration> { None }
+    pub fn source(&self) -> Option<&'static str> { None }
+}
