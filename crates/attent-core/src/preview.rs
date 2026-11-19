@@ -28,6 +28,10 @@ pub struct FramePreview {
     /// An in-memory JPEG data URL; returned only when preview is opted into.
     pub data_url: String,
     pub faces: Vec<FaceOverlay>,
+    /// Detection is from an earlier analyzed frame in live preview mode.
+    /// None means there is no sufficiently recent detection to overlay.
+    pub detection_sequence: Option<u64>,
+    pub detection_age_ms: Option<f64>,
 }
 
 pub fn encode_preview(frame: &CapturedFrame, faces: &[FaceDetection]) -> Result<FramePreview> {
@@ -73,6 +77,8 @@ pub fn encode_preview_rgb(
                 confidence: f.confidence,
             })
             .collect(),
+        detection_sequence: None,
+        detection_age_ms: None,
     })
 }
 
