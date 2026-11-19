@@ -148,9 +148,10 @@ impl Monitor {
     /// Explicitly opt into sending sampled camera images to this local UI.
     /// Disabling immediately drops the compressed frame retained in memory.
     pub fn set_preview_enabled(&self, enabled: bool) {
-        self.preview_enabled.store(enabled, Ordering::Relaxed);
+        let mut slot = self.preview.lock().unwrap_or_else(|p| p.into_inner());
+        self.preview_enabled.store(enabled, Ordering::Release);
         if !enabled {
-            *self.preview.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            *slot = None;
         }
     }
 
@@ -312,10 +313,11 @@ fn observe(
             let preview_started = Instant::now();
             match encode_preview(&frame, &faces) {
                 Ok(preview) => {
-                    // If disabled while encoding, don't publish the image.
-                    if preview_enabled.load(Ordering::Relaxed) {
-                        *shared_preview.lock().unwrap_or_else(|p| p.into_inner()) =
-                            Some(preview);
+                    // Publish under the same lock used by opt-out; hiding the
+                    // preview cannot race with publication of a later frame.
+                    let mut slot = shared_preview.lock().unwrap_or_else(|p| p.into_inner());
+                    if preview_enabled.load(Ordering::Acquire) {
+                        *slot = Some(preview);
                     }
                 }
                 Err(err) => preview_error = Some(err.to_string()),
