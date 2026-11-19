@@ -15,12 +15,13 @@ pub(crate) struct FrameTimings {
     /// Identical backend timestamp; not proof of identical image pixels.
     pub driver_timestamp_unchanged: bool,
     pub preview_requested: bool,
-    pub preview_encoded: bool,
+    pub preview_enqueued: bool,
     pub preview_error: bool,
     pub decode_ms: f64,
     pub preprocess_ms: f64,
     pub inference_ms: f64,
     pub postprocess_ms: f64,
+    /// Time spent dispatching an RGB copy to the async encoder; not JPEG encode time.
     pub preview_ms: f64,
     pub pipeline_ms: f64,
     pub iteration_ms: f64,
@@ -76,7 +77,7 @@ impl DiagnosticsWindow {
         let iteration_p95_ms = percentile(&self.timings, |x| x.iteration_ms, 95);
         let period_avg_ms = average_present(&self.timings, |x| x.period_ms);
         let preview_attempts = self.timings.iter().filter(|x| x.preview_requested).count();
-        let preview_encoded = self.timings.iter().filter(|x| x.preview_encoded).count();
+        let preview_enqueued = self.timings.iter().filter(|x| x.preview_enqueued).count();
         let preview_errors = self.timings.iter().filter(|x| x.preview_error).count();
         let unchanged_driver_timestamps =
             self.timings.iter().filter(|x| x.driver_timestamp_unchanged).count();
@@ -99,7 +100,7 @@ impl DiagnosticsWindow {
             snapshot_lock_wait_p95_ms = percentile(&self.timings, |x| x.snapshot_lock_wait_ms, 95),
             unchanged_driver_timestamps,
             preview_attempts,
-            preview_encoded,
+            preview_enqueued,
             preview_errors,
             decode_avg_ms = average(&self.timings, |x| x.decode_ms),
             preprocess_avg_ms = average(&self.timings, |x| x.preprocess_ms),
