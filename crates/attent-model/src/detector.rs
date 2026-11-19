@@ -63,7 +63,7 @@ impl YuNetDetector {
     pub fn detect(&self, output: &YuNetOutput) -> Result<Vec<FaceDetection>> {
         let geo = output.transform;
         let side = geo.input_side as usize;
-        ensure!(side == 640, "this YuNet model expects a 640x640 input");
+        ensure!(matches!(side, 160 | 320 | 640), "unsupported YuNet input side: {side}");
         ensure!(geo.source_width > 0 && geo.source_height > 0);
         ensure!(geo.resized_width > 0 && geo.resized_height > 0);
         ensure!(output.tensors.len() == 12, "YuNet must return 12 tensors");
@@ -245,10 +245,14 @@ mod tests {
     use super::*;
 
     fn mock_output() -> YuNetOutput {
+        mock_output_for_side(640)
+    }
+
+    fn mock_output_for_side(side: usize) -> YuNetOutput {
         let mut tensors = Vec::new();
         for group in 0..4 {
             for &stride in &STRIDES {
-                let count = (640 / stride).pow(2);
+                let count = (side / stride).pow(2);
                 let channels = [1, 1, 4, 10][group];
                 tensors.push(OutputTensor {
                     shape: vec![1, count, channels],
@@ -261,11 +265,11 @@ mod tests {
             transform: Letterbox {
                 source_width: 640,
                 source_height: 480,
-                input_side: 640,
-                resized_width: 640,
-                resized_height: 480,
+                input_side: side as u32,
+                resized_width: side as u32,
+                resized_height: side as u32 * 3 / 4,
                 pad_left: 0,
-                pad_top: 80,
+                pad_top: (side as u32 - side as u32 * 3 / 4) / 2,
             },
             frame_sequence: 1,
             received_at: SystemTime::UNIX_EPOCH,
@@ -325,6 +329,21 @@ mod tests {
         let far = [30.0, 30.0, 10.0, 10.0];
         assert!(intersection_over_union(a, b) > 0.3);
         assert_eq!(intersection_over_union(a, far), 0.0);
+    }
+
+    #[test]
+    fn smaller_model_outputs_map_back_to_source_space() {
+        let mut output = mock_output_for_side(320);
+        let idx = 10 * 40 + 5; // 320/8=40 cells per row
+        output.tensors[0].values[idx] = 1.0;
+        output.tensors[3].values[idx] = 1.0;
+        output.tensors[6].values[idx * 4..idx * 4 + 4].copy_from_slice(&[
+            0.5, 0.5, 2.0_f32.ln(), 2.0_f32.ln(),
+        ]);
+        let faces = YuNetDetector::new(DetectorConfig::default())
+            .unwrap().detect(&output).unwrap();
+        assert_eq!(faces.len(), 1);
+        assert_eq!(faces[0].bbox, [72.0, 88.0, 32.0, 32.0]);
     }
 
     #[test]
