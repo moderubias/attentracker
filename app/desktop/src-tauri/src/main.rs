@@ -128,10 +128,17 @@ fn start_monitor(
     monitor: State<'_, Monitor>,
 ) -> Result<(), String> {
     // A remote-built binary must not depend on the build host's source path.
+    // Prefer a checksum-verified dynamic-shape model from the current
+    // working directory if the developer has explicitly installed it.
     let model_path = std::env::var_os("ATTENT_MODEL_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../models/yunet.onnx")
+            let dynamic = PathBuf::from("models/yunet-dynamic.onnx");
+            if dynamic.is_file() {
+                dynamic
+            } else {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../models/yunet.onnx")
+            }
         });
     info!(
         target: "attentracker_desktop::ipc",
