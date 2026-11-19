@@ -48,9 +48,9 @@ impl DiagnosticsWindow {
         self.timings.push(timings);
     }
 
-    pub(crate) fn report_if_due(&mut self, interval_ms: u64, preview_enabled: bool) {
+    pub(crate) fn report_if_due(&mut self, interval_ms: u64, preview_enabled: bool, model_input_side: u32) {
         if self.started.elapsed() >= REPORT_INTERVAL {
-            self.report("periodic", interval_ms, preview_enabled);
+            self.report("periodic", interval_ms, preview_enabled, model_input_side);
         }
     }
 
@@ -59,6 +59,7 @@ impl DiagnosticsWindow {
         reason: &str,
         interval_ms: u64,
         preview_enabled: bool,
+        model_input_side: u32,
     ) {
         let elapsed = self.started.elapsed().as_secs_f64();
         let frames = self.timings.len();
@@ -90,6 +91,7 @@ impl DiagnosticsWindow {
             elapsed_s = elapsed,
             fps,
             target_interval_ms = interval_ms,
+            model_input_side,
             preview_enabled,
             capture_avg_ms = average(&self.timings, |x| x.capture_ms),
             capture_p95_ms = percentile(&self.timings, |x| x.capture_ms, 95),
