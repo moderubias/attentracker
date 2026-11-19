@@ -26,11 +26,13 @@ pub struct MonitorConfig {
 impl MonitorConfig {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            (Duration::from_millis(250)..=Duration::from_secs(60))
-                .contains(&self.sample_interval),
+            (Duration::from_millis(250)..=Duration::from_secs(60)).contains(&self.sample_interval),
             "sample_interval must be between 250 ms and 60 s"
         );
-        ensure!(!self.model_path.as_os_str().is_empty(), "model path is empty");
+        ensure!(
+            !self.model_path.as_os_str().is_empty(),
+            "model path is empty"
+        );
         Ok(())
     }
 }
@@ -212,16 +214,10 @@ fn observe(
         .with_context(|| format!("loading YuNet at {}", config.model_path.display()))?;
     let detector = YuNetDetector::new(DetectorConfig::default())?;
 
-    let preferred = CameraFormat::new(
-        Resolution::new(640, 480),
-        FrameFormat::MJPEG,
-        30,
-    );
-    let mut camera = AttentCamera::new_preferred(
-        CameraIndex::Index(config.camera_index),
-        preferred,
-    )
-    .context("opening capture device")?;
+    let preferred = CameraFormat::new(Resolution::new(640, 480), FrameFormat::MJPEG, 30);
+    let mut camera =
+        AttentCamera::new_preferred(CameraIndex::Index(config.camera_index), preferred)
+            .context("opening capture device")?;
 
     {
         let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
