@@ -1,0 +1,309 @@
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant, UNIX_EPOCH},
+};
+
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use attent_camera::{AttentCamera, prepare_yunet};
+use attent_model::{DetectorConfig, YuNetDetector, YuNetModel};
+use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, Resolution};
+use serde::Serialize;
+
+const MODEL_SIDE: u32 = 640;
+
+#[derive(Clone, Debug)]
+pub struct MonitorConfig {
+    pub camera_index: u32,
+    pub sample_interval: Duration,
+    pub model_path: PathBuf,
+}
+
+impl MonitorConfig {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (Duration::from_millis(250)..=Duration::from_secs(60))
+                .contains(&self.sample_interval),
+            "sample_interval must be between 250 ms and 60 s"
+        );
+        ensure!(!self.model_path.as_os_str().is_empty(), "model path is empty");
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorPhase {
+    #[default]
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Presence {
+    #[default]
+    Unknown,
+    NoFace,
+    FacePresent,
+    MultipleFaces,
+}
+
+impl Presence {
+    fn from_count(n: usize) -> Self {
+        match n {
+            0 => Self::NoFace,
+            1 => Self::FacePresent,
+            _ => Self::MultipleFaces,
+        }
+    }
+}
+
+/// No images or raw key events are retained in this state.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorSnapshot {
+    pub phase: MonitorPhase,
+    pub presence: Presence,
+    pub camera_index: Option<u32>,
+    pub frames_analyzed: u64,
+    pub face_count: Option<usize>,
+    pub best_confidence: Option<f32>,
+    pub last_observed_at_ms: Option<u64>,
+    pub last_analysis_ms: Option<f64>,
+    pub last_capture_ms: Option<f64>,
+    pub last_error: Option<String>,
+}
+
+struct Worker {
+    stop: Sender<()>,
+    handle: JoinHandle<()>,
+}
+
+/// Owns at most one monitoring thread. No camera access happens before start().
+pub struct Monitor {
+    snapshot: Arc<Mutex<MonitorSnapshot>>,
+    worker: Mutex<Option<Worker>>,
+}
+
+impl Default for Monitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Monitor {
+    pub fn new() -> Self {
+        Self {
+            snapshot: Arc::new(Mutex::new(MonitorSnapshot::default())),
+            worker: Mutex::new(None),
+        }
+    }
+
+    pub fn snapshot(&self) -> MonitorSnapshot {
+        self.snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Starts asynchronously. Device and model errors are reported via snapshot().
+    pub fn start(&self, config: MonitorConfig) -> Result<()> {
+        config.validate()?;
+        let mut worker = self
+            .worker
+            .lock()
+            .map_err(|_| anyhow!("monitor worker lock is poisoned"))?;
+
+        if worker.as_ref().is_some_and(|w| !w.handle.is_finished()) {
+            bail!("monitor is already running or stopping");
+        }
+        if let Some(completed) = worker.take() {
+            completed
+                .handle
+                .join()
+                .map_err(|_| anyhow!("previous monitor worker panicked"))?;
+        }
+
+        {
+            let mut status = self.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+            *status = MonitorSnapshot {
+                phase: MonitorPhase::Starting,
+                camera_index: Some(config.camera_index),
+                ..MonitorSnapshot::default()
+            };
+        }
+
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let snapshot = Arc::clone(&self.snapshot);
+
+        let handle = match thread::Builder::new()
+            .name("attent-cv-monitor".into())
+            .spawn(move || {
+                let result = observe(config, &snapshot, &stop_rx);
+                let mut state = snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                match result {
+                    Ok(()) => {
+                        state.phase = MonitorPhase::Stopped;
+                        state.presence = Presence::Unknown;
+                        state.face_count = None;
+                    }
+                    Err(err) => {
+                        state.phase = MonitorPhase::Error;
+                        state.presence = Presence::Unknown;
+                        state.face_count = None;
+                        state.last_error = Some(format!("{err:#}"));
+                    }
+                }
+            }) {
+            Ok(handle) => handle,
+            Err(err) => {
+                let mut state = self.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                state.phase = MonitorPhase::Error;
+                state.last_error = Some(err.to_string());
+                return Err(err.into());
+            }
+        };
+
+        *worker = Some(Worker {
+            stop: stop_tx,
+            handle,
+        });
+        Ok(())
+    }
+
+    /// Non-blocking stop request; observe phase=stopped to confirm completion.
+    pub fn stop(&self) -> Result<()> {
+        let worker = self
+            .worker
+            .lock()
+            .map_err(|_| anyhow!("monitor worker lock is poisoned"))?;
+
+        if let Some(worker) = worker.as_ref() {
+            if !worker.handle.is_finished() {
+                {
+                    let mut state = self.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                    state.phase = MonitorPhase::Stopping;
+                }
+                let _ = worker.stop.send(());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn observe(
+    config: MonitorConfig,
+    shared: &Arc<Mutex<MonitorSnapshot>>,
+    stop_rx: &Receiver<()>,
+) -> Result<()> {
+    if stop_rx.try_recv().is_ok() {
+        return Ok(());
+    }
+
+    let model = YuNetModel::load(&config.model_path)
+        .with_context(|| format!("loading YuNet at {}", config.model_path.display()))?;
+    let detector = YuNetDetector::new(DetectorConfig::default())?;
+
+    let preferred = CameraFormat::new(
+        Resolution::new(640, 480),
+        FrameFormat::MJPEG,
+        30,
+    );
+    let mut camera = AttentCamera::new_preferred(
+        CameraIndex::Index(config.camera_index),
+        preferred,
+    )
+    .context("opening capture device")?;
+
+    {
+        let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+        if state.phase != MonitorPhase::Stopping {
+            state.phase = MonitorPhase::Running;
+        }
+    }
+
+    loop {
+        // A stop request can arrive while the model/device is initializing.
+        match stop_rx.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+
+        let begun = Instant::now();
+        let frame = camera.capture().context("capturing camera frame")?;
+        let input = prepare_yunet(&frame, MODEL_SIDE).context("preprocessing frame")?;
+        let raw = model.infer(&input).context("running YuNet")?;
+        let faces = detector.detect(&raw).context("decoding YuNet detections")?;
+        let analysis_ms = begun.elapsed().as_secs_f64() * 1000.0;
+
+        {
+            let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+            state.frames_analyzed = state.frames_analyzed.saturating_add(1);
+            state.presence = Presence::from_count(faces.len());
+            state.face_count = Some(faces.len());
+            state.best_confidence = faces.first().map(|f| f.confidence);
+            state.last_observed_at_ms = frame
+                .meta
+                .received_at
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis().min(u64::MAX as u128) as u64);
+            state.last_capture_ms = Some(frame.meta.capture_duration.as_secs_f64() * 1000.0);
+            state.last_analysis_ms = Some(analysis_ms);
+            state.last_error = None;
+        }
+
+        let remaining = config.sample_interval.saturating_sub(begun.elapsed());
+        match stop_rx.recv_timeout(remaining) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presence_is_observational_not_productivity() {
+        assert_eq!(Presence::from_count(0), Presence::NoFace);
+        assert_eq!(Presence::from_count(1), Presence::FacePresent);
+        assert_eq!(Presence::from_count(2), Presence::MultipleFaces);
+        assert_eq!(Presence::from_count(8), Presence::MultipleFaces);
+    }
+
+    #[test]
+    fn sampling_bounds_are_enforced() {
+        let mut config = MonitorConfig {
+            camera_index: 1,
+            sample_interval: Duration::from_millis(250),
+            model_path: PathBuf::from("models/yunet.onnx"),
+        };
+        assert!(config.validate().is_ok());
+        config.sample_interval = Duration::from_millis(249);
+        assert!(config.validate().is_err());
+        config.sample_interval = Duration::from_secs(60);
+        assert!(config.validate().is_ok());
+        config.sample_interval = Duration::from_secs(61);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn snapshot_initially_has_unknown_presence() {
+        let monitor = Monitor::new();
+        let s = monitor.snapshot();
+        assert_eq!(s.phase, MonitorPhase::Stopped);
+        assert_eq!(s.presence, Presence::Unknown);
+        assert_eq!(s.face_count, None);
+    }
+}
