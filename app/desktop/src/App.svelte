@@ -4,9 +4,12 @@
 
   type Phase = "stopped" | "starting" | "running" | "stopping" | "error";
   type Presence = "unknown" | "no_face" | "face_present" | "multiple_faces";
+  type ActivityState = "unknown" | "working" | "idling" | "away";
   type Snapshot = {
     phase: Phase;
     presence: Presence;
+    activityState: ActivityState;
+    inputSource: string | null;
     cameraIndex: number | null;
     cameraFormat: string | null;
     framesAnalyzed: number;
@@ -40,7 +43,8 @@
   };
 
   const empty: Snapshot = {
-    phase: "stopped", presence: "unknown", cameraIndex: null, cameraFormat: null,
+    phase: "stopped", presence: "unknown", activityState: "unknown",
+    inputSource: null, cameraIndex: null, cameraFormat: null,
     framesAnalyzed: 0, faceCount: null, bestConfidence: null,
     lastObservedAtMs: null, lastAnalysisMs: null, lastCaptureMs: null,
     lastDecodeMs: null, lastPreprocessMs: null, lastInferenceMs: null,
@@ -99,6 +103,13 @@
       metrics.renderedImages += 1;
     }
   }
+
+  const activityLabels: Record<ActivityState, string> = {
+    unknown: "Insufficient evidence",
+    working: "Possible working · recent input",
+    idling: "Possible idling · no recent input",
+    away: "Possibly away · no face for 8 s"
+  };
 
   const states: Record<Presence, string> = {
     unknown: "No observation",
@@ -388,12 +399,13 @@
       </div>
 
       <div class="observed-state">
-        <div class="state-indicator" class:detected={snapshot.presence === "face_present"}></div>
+        <div class="state-indicator" class:detected={snapshot.activityState === "working"}></div>
         <div>
-          <p class="small-label">Latest observation</p>
-          <p class="state-name">{states[snapshot.presence]}</p>
+          <p class="small-label">Estimated state · provisional</p>
+          <p class="state-name">{activityLabels[snapshot.activityState]}</p>
         </div>
       </div>
+      <p class="aside-note">Camera: {states[snapshot.presence]}. Input evidence: {snapshot.inputSource ?? "unavailable"}. Activity is not productivity; Working and Idling require an OS input source.</p>
 
       <div class="config-fields">
         <label>Camera index
@@ -448,7 +460,7 @@
         </div>
       </div>
 
-      <p class="aside-note">Camera presence is not a productivity score. No monitoring starts until you press Start.</p>
+      <p class="aside-note">No monitoring starts until you press Start. No keystrokes or video frames are recorded to disk.</p>
     </aside>
   </div>
 
