@@ -22,11 +22,40 @@ use wayland_protocols::ext::idle_notify::v1::client::{
 };
 
 const IDLE_THRESHOLD: Duration = Duration::from_millis(1_000);
+// Allow the compositor to deliver a pre-existing idle state before assuming
+// that the absence of an Idled event denotes input activity.
+const INITIAL_SETTLE: Duration = Duration::from_millis(2_500);
 
 #[derive(Default)]
 struct Reading {
     connected_at: Option<Instant>,
     idle_since: Option<Instant>,
+    resumed_at: Option<Instant>,
+}
+
+impl Reading {
+    fn idle_for(&self, now: Instant) -> Option<Duration> {
+        let connected = self.connected_at?;
+        if let Some(since) = self.idle_since {
+            // Idled arrives after the configured threshold, not at the
+            // instant of the user's last physical input.
+            return Some(IDLE_THRESHOLD + now.saturating_duration_since(since));
+        }
+        if let Some(since) = self.resumed_at {
+            let elapsed = now.saturating_duration_since(since);
+            // When no new idle event arrives despite the 1 s subscription,
+            // the compositor is reporting an active seat. Exact last-input
+            // timestamps are unavailable; ZERO denotes a non-idle seat.
+            return Some(if elapsed <= IDLE_THRESHOLD { elapsed } else { Duration::ZERO });
+        }
+        if now.saturating_duration_since(connected) >= INITIAL_SETTLE {
+            // Non-idle is inferred from the lack of an Idled notification
+            // only after giving the compositor enough time to settle.
+            Some(Duration::ZERO)
+        } else {
+            None
+        }
+    }
 }
 
 struct WaylandState {
@@ -67,9 +96,11 @@ impl Dispatch<ExtIdleNotificationV1, ()> for WaylandState {
         match event {
             ext_idle_notification_v1::Event::Idled => {
                 reading.idle_since = Some(Instant::now());
+                reading.resumed_at = None;
             }
             ext_idle_notification_v1::Event::Resumed => {
                 reading.idle_since = None;
+                reading.resumed_at = Some(Instant::now());
             }
             _ => {}
         }
@@ -155,17 +186,7 @@ impl InputIdleMonitor {
 
     pub fn idle_for(&self) -> Option<Duration> {
         let r = self.reading.lock().unwrap_or_else(|e| e.into_inner());
-        let connected_at = r.connected_at?;
-        // A new notification starts non-idle even before seeing user input.
-        // Do not promote that initialization window to activity evidence.
-        if let Some(since) = r.idle_since {
-            return Some(IDLE_THRESHOLD + since.elapsed());
-        }
-        if connected_at.elapsed() >= IDLE_THRESHOLD + Duration::from_millis(250) {
-            Some(Duration::ZERO)
-        } else {
-            None
-        }
+        r.idle_for(Instant::now())
     }
 
     pub fn source(&self) -> Option<&'static str> {
@@ -182,5 +203,54 @@ impl Drop for InputIdleMonitor {
                 tracing::warn!(target: "attent_activity::idle", "idle observer thread panicked");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_does_not_invent_input_activity() {
+        let at = Instant::now();
+        let reading = Reading {
+            connected_at: Some(at),
+            ..Reading::default()
+        };
+        assert_eq!(reading.idle_for(at + Duration::from_millis(1200)), None);
+        assert_eq!(reading.idle_for(at + Duration::from_millis(2499)), None);
+        // After the compositor has had time to send a 1 s Idle event,
+        // no event is interpreted as an actively used seat.
+        assert_eq!(reading.idle_for(at + INITIAL_SETTLE), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn idle_notification_is_never_mistaken_for_new_input() {
+        let at = Instant::now();
+        let reading = Reading {
+            connected_at: Some(at),
+            idle_since: Some(at + Duration::from_secs(1)),
+            resumed_at: None,
+        };
+        assert_eq!(
+            reading.idle_for(at + Duration::from_millis(1100)),
+            Some(Duration::from_millis(1100))
+        );
+        assert_eq!(
+            reading.idle_for(at + Duration::from_secs(12)),
+            Some(Duration::from_secs(12))
+        );
+    }
+
+    #[test]
+    fn resumed_transition_is_fresh_evidence_of_input() {
+        let at = Instant::now();
+        let reading = Reading {
+            connected_at: Some(at),
+            resumed_at: Some(at + Duration::from_secs(2)),
+            idle_since: None,
+        };
+        assert_eq!(reading.idle_for(at + Duration::from_millis(2200)), Some(Duration::from_millis(200)));
+        assert_eq!(reading.idle_for(at + Duration::from_secs(5)), Some(Duration::ZERO));
     }
 }
