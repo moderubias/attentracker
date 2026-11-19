@@ -13,8 +13,9 @@ use std::{
 };
 
 use anyhow::Result;
+use attent_camera::CapturedFrame;
 use attent_model::FaceDetection;
-use image::RgbImage;
+
 use tracing::{error, info, trace, warn};
 
 use crate::{
@@ -23,9 +24,12 @@ use crate::{
 };
 
 pub(crate) struct PreviewJob {
-    pub rgb: RgbImage,
-    pub sequence: u64,
+    // Share the latest decoded camera frame with inference and preview.
+    // No additional RGB copy is made when scheduling JPEG compression.
+    pub frame: Arc<CapturedFrame>,
     pub faces: Vec<FaceDetection>,
+    pub detection_sequence: Option<u64>,
+    pub detection_age_ms: Option<f64>,
     pub generation: u64,
 }
 
@@ -88,10 +92,14 @@ impl PreviewWorker {
                     }
 
                     let encode_started = Instant::now();
-                    let outcome = encode_preview_rgb(&job.rgb, job.sequence, &job.faces);
+                    let outcome = encode_preview_rgb(
+                        &job.frame.rgb, job.frame.meta.sequence, &job.faces
+                    );
                     let elapsed_ms = encode_started.elapsed().as_secs_f64() * 1000.0;
                     match outcome {
-                        Ok(image) => {
+                        Ok(mut image) => {
+                            image.detection_sequence = job.detection_sequence;
+                            image.detection_age_ms = job.detection_age_ms;
                             trace!(
                                 target: "attent_core::preview",
                                 sequence = image.sequence,
@@ -118,7 +126,7 @@ impl PreviewWorker {
                         Err(err) => {
                             warn!(
                                 target: "attent_core::preview",
-                                sequence = job.sequence,
+                                sequence = job.frame.meta.sequence,
                                 error = %err,
                                 "asynchronous JPEG preview encoding failed"
                             );
@@ -141,8 +149,12 @@ impl PreviewWorker {
         })
     }
 
-    pub(crate) fn submit(&self, job: PreviewJob) -> Result<SubmitResult> {
-        match self.sender.as_ref().expect("preview sender present").try_send(job) {
+    pub(crate) fn sender(&self) -> SyncSender<PreviewJob> {
+        self.sender.as_ref().expect("preview sender present").clone()
+    }
+
+    pub(crate) fn submit(sender: &SyncSender<PreviewJob>, job: PreviewJob) -> Result<SubmitResult> {
+        match sender.try_send(job) {
             Ok(()) => Ok(SubmitResult::Queued),
             Err(TrySendError::Full(_)) => Ok(SubmitResult::Full),
             Err(TrySendError::Disconnected(_)) => {
