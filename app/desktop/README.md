@@ -43,6 +43,9 @@ The project uses system fonts only and does not fetch remote UI assets.
 
 ## Diagnostic logging
 
+For reproducible Arch Linux commands, the new UI/IPC watchdog, per-stage fields, and privacy guidance, see [the diagnostics runbook](../../docs/diagnostics.md).
+
+
 All logs are written by the Rust backend to the terminal running Tauri.
 The default logging level reports startup/shutdown, camera negotiation,
 preview permission changes, failures, and one performance window approximately
