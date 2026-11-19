@@ -1,5 +1,6 @@
 //! Ephemeral, opt-in diagnostic frames. Never persist or log camera pixels.
 use anyhow::Result;
+#[cfg(test)]
 use attent_camera::CapturedFrame;
 use attent_model::FaceDetection;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -34,6 +35,7 @@ pub struct FramePreview {
     pub detection_age_ms: Option<f64>,
 }
 
+#[cfg(test)]
 pub fn encode_preview(frame: &CapturedFrame, faces: &[FaceDetection]) -> Result<FramePreview> {
     encode_preview_rgb(&frame.rgb, frame.meta.sequence, faces)
 }
