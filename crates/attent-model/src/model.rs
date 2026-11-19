@@ -28,8 +28,14 @@ pub struct YuNetOutput {
 
 impl YuNetModel {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let begun = Instant::now();
         let runtime = tract::onnx()?.load(path)?.into_model()?.into_runnable()?;
-
+        tracing::info!(
+            target: "attent_model::runtime",
+            model = "YuNet",
+            load_ms = begun.elapsed().as_secs_f64() * 1000.0,
+            "ONNX model loaded"
+        );
         Ok(Self { runtime })
     }
 
@@ -46,11 +52,15 @@ impl YuNetModel {
         );
 
         // Borrow f32 as bytes; Tract constructs its own tensor.
+        let tensor_start = Instant::now();
         let bytes = bytemuck::cast_slice::<f32, u8>(&input.data);
-
         let tensor = Tensor::from_bytes(DatumType::F32, &input.shape, bytes)?;
+        let tensor_ms = tensor_start.elapsed().as_secs_f64() * 1000.0;
 
+        let execution_start = Instant::now();
         let outputs = self.runtime.run([tensor])?;
+        let execute_ms = execution_start.elapsed().as_secs_f64() * 1000.0;
+        let unpack_start = Instant::now();
 
         ensure!(
             outputs.len() == 12,
@@ -80,6 +90,15 @@ impl YuNetModel {
                 values,
             });
         }
+
+        tracing::trace!(
+            target: "attent_model::inference",
+            frame_sequence = input.frame_sequence,
+            tensor_create_ms = tensor_ms,
+            tract_execute_ms = execute_ms,
+            outputs_copy_ms = unpack_start.elapsed().as_secs_f64() * 1000.0,
+            "ONNX inference stages"
+        );
 
         Ok(YuNetOutput {
             tensors,
