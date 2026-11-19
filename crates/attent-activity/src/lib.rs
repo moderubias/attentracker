@@ -15,6 +15,10 @@ const IDLING_AFTER: Duration = Duration::from_secs(60);
 // Wayland idle notifications fire after 1 second. An already-idle seat
 // (>=1 s) must never qualify as "recent input".
 const RECENT_INPUT: Duration = Duration::from_millis(900);
+// Enter Working only on fresh evidence, but keep it across short pauses.
+// This prevents one-second Wayland idle notifications from fragmenting a
+// continuous input session into dozens of artificial state transitions.
+const WORKING_EXIT_IDLE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -84,6 +88,11 @@ impl ActivityClassifier {
                     match input.idle_for {
                         Some(age) if age >= IDLING_AFTER => ActivityState::Idling,
                         Some(age) if age <= RECENT_INPUT => ActivityState::Working,
+                        Some(age)
+                            if self.state == ActivityState::Working && age < WORKING_EXIT_IDLE =>
+                        {
+                            ActivityState::Working
+                        }
                         _ => ActivityState::Unknown,
                     }
                 }
@@ -165,13 +174,55 @@ mod tests {
     }
 
     #[test]
+    fn working_hysteresis_does_not_invent_new_input() {
+        let start = Instant::now();
+        let mut c = ActivityClassifier::new();
+        c.observe(start, Some(1), idle(0));
+        assert_eq!(
+            c.observe(start + Duration::from_millis(500), Some(1), idle(0)),
+            ActivityState::Working
+        );
+        // Every one-second "Idled" event is no longer an activity edge.
+        assert_eq!(
+            c.observe(start + Duration::from_secs(2), Some(1), idle(1)),
+            ActivityState::Working
+        );
+        assert_eq!(
+            c.observe(start + Duration::from_secs(3), Some(1), idle(4)),
+            ActivityState::Working
+        );
+        assert_eq!(
+            c.observe(start + Duration::from_secs(4), Some(1), idle(5)),
+            ActivityState::Unknown
+        );
+        // Once Unknown, a four-second idle reading cannot re-enter Working.
+        assert_eq!(
+            c.observe(start + Duration::from_secs(5), Some(1), idle(4)),
+            ActivityState::Unknown
+        );
+        assert_eq!(
+            c.observe(start + Duration::from_secs(6), Some(1), idle(0)),
+            ActivityState::Working
+        );
+        // Missing input evidence must not silently prolong Working.
+        assert_eq!(
+            c.observe(start + Duration::from_secs(7), Some(1), InputEvidence::default()),
+            ActivityState::Unknown
+        );
+        assert_eq!(
+            c.observe(start + Duration::from_secs(68), Some(1), idle(60)),
+            ActivityState::Idling
+        );
+    }
+
+    #[test]
     fn working_and_idling_require_explicit_os_evidence() {
         let at = Instant::now();
         let mut c = ActivityClassifier::new();
         c.observe(at, Some(1), InputEvidence::default());
         assert_eq!(c.observe(at + Duration::from_millis(500), Some(1), InputEvidence::default()), ActivityState::Unknown);
         assert_eq!(c.observe(at + Duration::from_millis(600), Some(1), idle(0)), ActivityState::Working);
-        assert_eq!(c.observe(at + Duration::from_millis(700), Some(1), idle(1)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(700), Some(1), idle(1)), ActivityState::Working);
         assert_eq!(c.observe(at + Duration::from_millis(750), Some(1), idle(10)), ActivityState::Unknown);
         assert_eq!(c.observe(at + Duration::from_millis(800), Some(1), idle(60)), ActivityState::Idling);
         assert_eq!(c.observe(at + Duration::from_millis(900), Some(2), idle(0)), ActivityState::Unknown);
