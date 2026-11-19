@@ -177,7 +177,7 @@ impl Monitor {
         info!(
             target: "attent_core::lifecycle",
             camera_index = config.camera_index,
-            target_interval_ms = config.sample_interval.as_millis(),
+            target_interval_ms = config.sample_interval.as_millis() as u64,
             "monitor start requested"
         );
         let mut worker = self
@@ -311,7 +311,7 @@ fn observe(
         model_load_ms,
         camera_open_ms = camera_open_started.elapsed().as_secs_f64() * 1000.0,
         camera_format = ?camera.format(),
-        target_interval_ms = config.sample_interval.as_millis(),
+        target_interval_ms = config.sample_interval.as_millis() as u64,
         "monitor initialized"
     );
 
@@ -454,17 +454,17 @@ fn observe(
             observed_period_ms = timings.period_ms.unwrap_or(0.0),
             planned_sleep_ms,
             scheduler_gap_ms = timings.scheduler_gap_ms.unwrap_or(0.0),
-            target_interval_ms = config.sample_interval.as_millis(),
+            target_interval_ms = config.sample_interval.as_millis() as u64,
             "completed sampled frame"
         );
         stats.record(timings);
-        stats.report_if_due(config.sample_interval.as_millis(), preview_enabled.load(Ordering::Relaxed));
+        stats.report_if_due(config.sample_interval.as_millis() as u64, preview_enabled.load(Ordering::Relaxed));
         match stop_rx.recv_timeout(remaining) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
-    stats.report("stopped", config.sample_interval.as_millis(), preview_enabled.load(Ordering::Relaxed));
+    stats.report("stopped", config.sample_interval.as_millis() as u64, preview_enabled.load(Ordering::Relaxed));
     Ok(())
 }
 
