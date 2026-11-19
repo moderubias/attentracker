@@ -12,3 +12,4 @@ attent-camera.workspace = true
 attent-model.workspace = true
 image = { workspace = true, features = ["jpeg"] }
 base64 = "0.22"
+tracing.workspace = true
