@@ -1,0 +1,16 @@
+[package]
+name = "attentracker-desktop"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+build = "build.rs"
+
+# Separate Tauri's Cargo workspace from the core workspace.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+attent-core = { path = "../../../crates/attent-core" }
