@@ -53,6 +53,7 @@ pub fn prepare_yunet(frame: &CapturedFrame, input_side: u32) -> Result<YuNetInpu
 }
 
 fn preprocess_rgb(rgb: &RgbImage, side: u32) -> Result<(Vec<f32>, Letterbox)> {
+    let started = Instant::now();
     let (w, h) = rgb.dimensions();
     ensure!(w > 0 && h > 0, "empty input image");
     ensure!(side > 0, "input side must be positive");
@@ -70,11 +71,14 @@ fn preprocess_rgb(rgb: &RgbImage, side: u32) -> Result<(Vec<f32>, Letterbox)> {
         .context("tensor dimensions overflow")?;
 
     // Avoid a full image resize when input already has the model's dimensions.
+    let resize_started = Instant::now();
     let resized = if new_w == w && new_h == h {
         None
     } else {
         Some(resize(rgb, new_w, new_h, FilterType::Triangle))
     };
+    let resize_ms = resize_started.elapsed().as_secs_f64() * 1000.0;
+    let tensor_started = Instant::now();
     let pixels = resized.as_ref().unwrap_or(rgb);
     let mut data = vec![0.0f32; len];
     for (i, px) in pixels.as_raw().chunks_exact(3).enumerate() {
@@ -86,6 +90,22 @@ fn preprocess_rgb(rgb: &RgbImage, side: u32) -> Result<(Vec<f32>, Letterbox)> {
         data[2 * plane_size + offset] = px[0] as f32; // R
     }
 
+    tracing::trace!(
+        target: "attent_camera::preprocess",
+        source_width = w,
+        source_height = h,
+        model_input_side = side,
+        resized_width = new_w,
+        resized_height = new_h,
+        pad_left,
+        pad_top,
+        tensor_elements = len,
+        resized_image = resized.is_some(),
+        resize_ms,
+        nchw_conversion_ms = tensor_started.elapsed().as_secs_f64() * 1000.0,
+        total_ms = started.elapsed().as_secs_f64() * 1000.0,
+        "RGB resize and BGR NCHW tensor preparation"
+    );
     Ok((
         data,
         Letterbox {
