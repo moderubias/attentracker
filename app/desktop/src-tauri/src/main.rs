@@ -67,7 +67,7 @@ struct FrontendWindow {
     status_latency_max_ms: f64,
     preview_latency_sum_ms: f64,
     preview_latency_max_ms: f64,
-    preview_bytes_total: u64,
+    preview_payload_chars: u64,
     last_received_sequence: u64,
     last_rendered_sequence: u64,
     preview_enabled: bool,
@@ -93,7 +93,7 @@ fn report_frontend_telemetry(report: FrontendWindow) {
         status_ipc_max_ms = report.status_latency_max_ms,
         preview_ipc_avg_ms = report.preview_latency_sum_ms / f64::from(report.preview_requests.max(1)),
         preview_ipc_max_ms = report.preview_latency_max_ms,
-        preview_payload_chars = report.preview_bytes_total,
+        preview_payload_chars = report.preview_payload_chars,
         last_received_sequence = report.last_received_sequence,
         last_rendered_sequence = report.last_rendered_sequence,
         "frontend polling, image rendering and Tauri IPC summary"
