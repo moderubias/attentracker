@@ -23,7 +23,7 @@ before the Tauri context is generated. The resulting PNG is ignored in Git.
 
 ## Using the diagnostics
 
-1. Choose a camera index and target sampling period (default: 750ms).
+1. Choose a camera index and sample period (default: 250ms). Use the Eco, Balanced, or Max throughput presets. Max throughput (0ms) disables artificial sleep between successive inference passes; this does not eliminate inference latency.
 2. Press **Start monitoring**. The camera stays off before this action.
 3. Press **Show camera preview** to opt into seeing sampled camera images.
    The preview displays *the exact frame used for the overlays*, so it
@@ -53,7 +53,8 @@ selected CV and Tract crates, not the entire GTK/Tauri dependency tree.
 This makes runtime measurements more representative than Rust's fully
 unoptimized defaults, at the cost of extra compilation and disk usage.
 Use the profiler to compare before and after results, rather than assume
-a particular speedup. A truly fluid raw camera preview would require a
+a particular speedup. At 0ms, the sequential worker runs continuously; observed
+FPS is bounded by the entire model-processing pass and may raise CPU usage. A truly fluid raw camera preview would require a
 separate capture/preview loop and remains future work.
 
 The Tauri subproject is a separate Cargo workspace. Check it separately:
