@@ -16,6 +16,7 @@ pub(crate) struct FrameTimings {
     pub iteration_ms: f64,
     pub period_ms: Option<f64>,
     pub planned_sleep_ms: f64,
+    pub scheduler_gap_ms: Option<f64>,
 }
 
 /// Maintains only recent numeric observations for a five-second summary.
@@ -88,12 +89,22 @@ impl DiagnosticsWindow {
             iteration_p95_ms,
             period_avg_ms,
             planned_sleep_avg_ms = average(&self.timings, |x| x.planned_sleep_ms),
+            scheduler_gap_avg_ms = average_present(&self.timings, |x| x.scheduler_gap_ms),
             "monitor performance summary"
         );
 
         self.timings.clear();
         self.started = Instant::now();
     }
+}
+
+/// Gap not accounted for by the previous iteration or its requested sleep.
+pub(crate) fn scheduler_gap_ms(
+    observed_period_ms: Option<f64>,
+    previous_cycle: Option<(f64, f64)>,
+) -> Option<f64> {
+    let (period, (iteration, requested_sleep)) = observed_period_ms.zip(previous_cycle)?;
+    Some((period - iteration - requested_sleep).max(0.0))
 }
 
 fn average(values: &[FrameTimings], f: impl Fn(&FrameTimings) -> f64) -> f64 {
@@ -140,6 +151,13 @@ mod tests {
         assert_eq!(percentile(&values, |x| x.inference_ms, 95), 19.0);
         assert_eq!(max_value(&values, |x| x.inference_ms), 20.0);
         assert!((average(&values, |x| x.inference_ms) - 10.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn scheduler_gap_separates_processing_sleep_and_extra_delay() {
+        assert_eq!(scheduler_gap_ms(Some(386.0), Some((296.0, 0.0))), Some(90.0));
+        assert_eq!(scheduler_gap_ms(Some(750.0), Some((249.0, 501.0))), Some(0.0));
+        assert_eq!(scheduler_gap_ms(None, None), None);
     }
 
     #[test]
