@@ -232,7 +232,14 @@ impl Monitor {
             .name("attent-cv-monitor".into())
             .spawn(move || {
                 let result = observe(config, &snapshot, &preview, &preview_enabled, &preview_generation, &stop_rx);
-                *preview.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                // End-of-session is a privacy boundary even on camera errors.
+                // Holding this lock fences against an in-flight encoder publish.
+                {
+                    let mut slot = preview.lock().unwrap_or_else(|p| p.into_inner());
+                    preview_generation.fetch_add(1, Ordering::AcqRel);
+                    preview_enabled.store(false, Ordering::Release);
+                    *slot = None;
+                }
                 let mut state = snapshot.lock().unwrap_or_else(|p| p.into_inner());
                 match result {
                     Ok(()) => {
@@ -295,6 +302,10 @@ impl Monitor {
                 let _ = worker.stop.send(());
             }
         }
+        // An explicit Stop revokes preview consent immediately, not just after
+        // the next camera frame or worker shutdown.
+        drop(worker);
+        self.set_preview_enabled(false);
         Ok(())
     }
 }
@@ -371,6 +382,7 @@ fn observe(
     let mut last_analyzed_sequence = 0_u64;
     let mut stats = DiagnosticsWindow::new();
     let mut classifier = ActivityClassifier::new();
+    let mut last_logged_activity = ActivityState::Unknown;
     // Start only after the user pressed Start. Drop stops the input observer
     // promptly and no keystrokes, coordinates or content are accessed.
     let input_observer = InputIdleMonitor::start();
@@ -432,11 +444,25 @@ fn observe(
             observed_at: frame.meta.received_tick,
             faces: faces.clone(),
         });
+        let input_idle_for = input_observer.idle_for();
         let activity_state = classifier.observe(
             Instant::now(),
             Some(faces.len()),
-            InputEvidence { idle_for: input_observer.idle_for() },
+            InputEvidence { idle_for: input_idle_for },
         );
+        if activity_state != last_logged_activity {
+            info!(
+                target: "attent_core::activity",
+                event = "activity_transition",
+                previous = ?last_logged_activity,
+                current = ?activity_state,
+                input_source = input_observer.source().unwrap_or("none"),
+                input_idle_ms = input_idle_for.map(|duration| duration.as_millis() as u64),
+                face_count = faces.len(),
+                "provisional activity state changed; no raw input logged"
+            );
+            last_logged_activity = activity_state;
+        }
         let analysis_ms = begun.elapsed().as_secs_f64() * 1000.0;
 
         // A stop request may have arrived during a long model inference.
