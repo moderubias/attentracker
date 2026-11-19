@@ -21,6 +21,9 @@ decoupling camera capture; do not assume equivalent FPS until benchmarked.
 - Turning preview off drops its retained encoded image and prevents an
   in-flight encoder result from being published by using a generation fence.
   It does **not** stop monitoring or bypass the camera input required by ML.
+- Stop and camera errors now **revoke preview opt-in**, rather than keeping
+  the toggle armed for the next Start. A new session requires an explicit
+  Show camera preview action after monitoring is running.
 - No image or raw key material is written to disk or sent to a remote server.
 
 ## State semantics
@@ -46,6 +49,13 @@ the input evidence is unavailable; the UI must report this truthfully.
 `Working` and `Idling` will not be inferred. The face-only `Away`
 heuristic can still operate. The camera does not identify *which* person
 is visible, and the system must not claim such identification.
+
+State changes are logged as `event="activity_transition"` with only
+previous/current provisional states, face count, provider name and the
+elapsed idle duration (if available). No key identities, mouse coordinates,
+window titles or pixels appear in those diagnostic events. The event
+diagnoses transitions; it does not validate whether an inference about
+actual work or physical absence is correct.
 
 ## Offloaded build (no Rust compiler on the laptop)
 
