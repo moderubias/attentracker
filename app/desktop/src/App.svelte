@@ -167,8 +167,9 @@
       metrics.statusLatencySumMs += statusMs;
       metrics.statusLatencyMaxMs = Math.max(metrics.statusLatencyMaxMs, statusMs);
       if (snapshot.phase === "stopped" || snapshot.phase === "error") {
-        // Do not invalidate an in-flight preview on every idle status poll.
-        if (preview !== null || lastPreviewSequence !== 0) previewEpoch += 1;
+        // Stopped/Error ends an opt-in camera-preview session.
+        if (previewEnabled || preview !== null || lastPreviewSequence !== 0) previewEpoch += 1;
+        previewEnabled = false;
         preview = null;
         lastPreviewSequence = 0;
         lastRenderedSequence = 0;
@@ -240,6 +241,7 @@
     commandError = null;
     try {
       await invoke("stop_monitor");
+      previewEnabled = false;
       preview = null;
       lastPreviewSequence = 0;
       lastRenderedSequence = 0;
@@ -381,7 +383,7 @@
       </div>
 
       <div class="viewer-toolbar">
-        <button class:enabled={previewEnabled} class="preview-toggle" onclick={togglePreview} disabled={commandPending}>
+        <button class:enabled={previewEnabled} class="preview-toggle" onclick={togglePreview} disabled={commandPending || snapshot.phase !== "running"}>
           <span class="toggle-dot"></span>
           {previewEnabled ? "Hide camera preview" : "Show camera preview"}
         </button>
