@@ -37,7 +37,7 @@ impl DiagnosticsWindow {
         self.timings.push(timings);
     }
 
-    pub(crate) fn report_if_due(&mut self, interval_ms: u128, preview_enabled: bool) {
+    pub(crate) fn report_if_due(&mut self, interval_ms: u64, preview_enabled: bool) {
         if self.started.elapsed() >= REPORT_INTERVAL {
             self.report("periodic", interval_ms, preview_enabled);
         }
@@ -46,7 +46,7 @@ impl DiagnosticsWindow {
     pub(crate) fn report(
         &mut self,
         reason: &str,
-        interval_ms: u128,
+        interval_ms: u64,
         preview_enabled: bool,
     ) {
         let elapsed = self.started.elapsed().as_secs_f64();
