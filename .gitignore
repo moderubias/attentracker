@@ -8,3 +8,6 @@ dist/
 # Generated from assets/icons/icon.jpg by the Tauri build script.
 app/desktop/src-tauri/icons/icon.png
 # Track Cargo.lock for reproducible application builds.
+
+# Downloaded separately and SHA-256 checked from OpenCV Zoo.
+/models/yunet-dynamic.onnx
