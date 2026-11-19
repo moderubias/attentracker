@@ -44,6 +44,9 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Desktop Rust compile
+      - name: Desktop Rust compile (development)
         working-directory: app/desktop/src-tauri
         run: cargo check
+      - name: Desktop production asset protocol compile
+        working-directory: app/desktop/src-tauri
+        run: cargo check --release --features tauri/custom-protocol
