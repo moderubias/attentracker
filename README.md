@@ -91,6 +91,11 @@ Bundled/third-party model weights and dependencies retain their own
 licenses. Verify the specific YuNet model attribution and redistribution
 terms before distributing packaged binaries.
 
+Optional NanoDet-Plus and Silero VAD weights may be downloaded separately
+with `bash scripts/fetch-optional-models.sh all`. They are **not loaded or
+integrated** in the running application. See [experimental model notes](models/EXPERIMENTAL.md)
+for provenance, integrity limitations, and integration requirements.
+
 ## Verification
 
 The camera preprocessing and YuNet postprocessing have unit tests,

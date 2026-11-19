@@ -11,3 +11,6 @@ app/desktop/src-tauri/icons/icon.png
 
 # Downloaded separately and SHA-256 checked from OpenCV Zoo.
 /models/yunet-dynamic.onnx
+
+# Optional model downloads are external assets, never Git-tracked.
+/models/experimental/
