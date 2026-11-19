@@ -51,7 +51,7 @@
   let previewEnabled = $state(false);
   let mirror = $state(false);
   let cameraIndex = $state(1);
-  let intervalMs = $state(750);
+  let intervalMs = $state(250);
   let commandPending = $state(false);
   let commandError = $state<string | null>(null);
   let lastPreviewSequence = 0;
@@ -72,11 +72,16 @@
   let canStart = $derived(
     !busy && !commandPending &&
     Number.isInteger(cameraIndex) && cameraIndex >= 0 &&
-    Number.isInteger(intervalMs) && intervalMs >= 250 && intervalMs <= 60_000
+    Number.isInteger(intervalMs) && intervalMs >= 0 && intervalMs <= 60_000
   );
   let observedFps = $derived(
     snapshot.lastObservationPeriodMs && snapshot.lastObservationPeriodMs > 0
       ? 1000 / snapshot.lastObservationPeriodMs
+      : null
+  );
+  let unthrottledEstimate = $derived(
+    snapshot.lastAnalysisMs && snapshot.lastAnalysisMs > 0
+      ? 1000 / (snapshot.lastAnalysisMs + (snapshot.lastPreviewMs ?? 0))
       : null
   );
 
@@ -297,10 +302,17 @@
         <label>Camera index
           <input type="number" min="0" step="1" bind:value={cameraIndex} disabled={busy || commandPending} />
         </label>
-        <label>Target sample period <span>(ms)</span>
-          <input type="number" min="250" max="60000" step="250" bind:value={intervalMs} disabled={busy || commandPending} />
+        <label>Target sample period <span>(ms; 0 = max rate)</span>
+          <input type="number" min="0" max="60000" step="50" bind:value={intervalMs} disabled={busy || commandPending} />
         </label>
       </div>
+
+      <div class="rate-presets" aria-label="Sampling rate presets">
+        <button type="button" class:selected={intervalMs === 1000} onclick={() => intervalMs = 1000} disabled={busy || commandPending}>Eco · 1 FPS</button>
+        <button type="button" class:selected={intervalMs === 250} onclick={() => intervalMs = 250} disabled={busy || commandPending}>Balanced · 250 ms</button>
+        <button type="button" class:selected={intervalMs === 0} onclick={() => intervalMs = 0} disabled={busy || commandPending}>Max throughput</button>
+      </div>
+      <p class="rate-hint">Sampling limits apply between completed passes. At 0 ms the worker performs consecutive analyses with no deliberate sleep. Stop to change the rate.</p>
 
       <div class="session-actions">
         <button class="start-button" onclick={start} disabled={!canStart}>
@@ -371,7 +383,7 @@
         </div>
       </div>
     </div>
-    <p class="measurement-note">Capture wait and MJPEG decode are measured separately. FPS refers to completed model observations, not the camera hardware frame rate. Developer builds may be slower than optimized builds.</p>
+    <p class="measurement-note">Estimated single-worker max throughput from the latest pass: {unthrottledEstimate == null ? "—" : unthrottledEstimate.toFixed(2)} FPS (not a guarantee). Inference is sequential; the target period is not a promised FPS. Developer builds may be slower than optimized builds.</p>
   </section>
 
   {#if snapshot.lastError}
