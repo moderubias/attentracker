@@ -15,3 +15,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 [dependencies]
 tauri = { version = "2", features = [] }
 attent-core = { path = "../../../crates/attent-core" }
+
+# Optimize inference dependencies while preserving fast UI dev rebuilds.
+# The first optimized build can be slower and use more disk space.
+[profile.dev.package."*"]
+opt-level = 2
