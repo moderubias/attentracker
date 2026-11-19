@@ -12,7 +12,9 @@ const FACE_LOSS_GRACE: Duration = Duration::from_millis(750);
 const FACE_CONFIRM: Duration = Duration::from_millis(400);
 const IDLING_AFTER: Duration = Duration::from_secs(60);
 // A 10–15 s idle duration must not be described as "recent input".
-const RECENT_INPUT: Duration = Duration::from_secs(2);
+// Wayland idle notifications fire after 1 second. An already-idle seat
+// (>=1 s) must never qualify as "recent input".
+const RECENT_INPUT: Duration = Duration::from_millis(900);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -169,7 +171,8 @@ mod tests {
         c.observe(at, Some(1), InputEvidence::default());
         assert_eq!(c.observe(at + Duration::from_millis(500), Some(1), InputEvidence::default()), ActivityState::Unknown);
         assert_eq!(c.observe(at + Duration::from_millis(600), Some(1), idle(0)), ActivityState::Working);
-        assert_eq!(c.observe(at + Duration::from_millis(700), Some(1), idle(10)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(700), Some(1), idle(1)), ActivityState::Unknown);
+        assert_eq!(c.observe(at + Duration::from_millis(750), Some(1), idle(10)), ActivityState::Unknown);
         assert_eq!(c.observe(at + Duration::from_millis(800), Some(1), idle(60)), ActivityState::Idling);
         assert_eq!(c.observe(at + Duration::from_millis(900), Some(2), idle(0)), ActivityState::Unknown);
         assert_eq!(c.observe(at + Duration::from_millis(1000), None, idle(0)), ActivityState::Unknown);
