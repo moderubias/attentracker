@@ -418,6 +418,7 @@ fn observe(
             last_preview_at = Some(Instant::now());
         }
 
+        let preview_error_occurred = preview_error.is_some();
         let snapshot_lock_started = Instant::now();
         let snapshot_lock_wait_ms;
         {
@@ -461,7 +462,7 @@ fn observe(
             driver_timestamp_unchanged,
             preview_requested,
             preview_encoded,
-            preview_error: preview_error.is_some(),
+            preview_error: preview_error_occurred,
             decode_ms: frame.meta.decode_duration.as_secs_f64() * 1000.0,
             preprocess_ms,
             inference_ms,
