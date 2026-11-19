@@ -35,6 +35,15 @@ decoupling camera capture; do not assume equivalent FPS until benchmarked.
 | `Working` | One face and OS input observed within the recent-activity threshold | Possible computer activity, not productivity |
 | `Idling` | One face and OS input idle for >=60 seconds | Possible computer idling |
 
+The activity classifier applies separate entry/exit thresholds: `Working`
+needs a confirmed face plus input-idle evidence below **0.9 seconds** to
+start; once active it persists through brief input gaps until idle reaches
+**5 seconds**. That is intentionally asymmetric to suppress flicker caused
+by Wayland's 1-second `Idled` notifications. The classifier still moves
+to `Unknown` immediately if OS input evidence becomes unavailable, and
+to `Idling` at 60 seconds with a confirmed face. A brief loss of face
+evidence is separately tolerated for 750 ms.
+
 The `Working` state requires an **actual OS input-idle signal**. On Linux
 Wayland, the worker attempts to connect to
 `ext-idle-notify-v1` **version 2** and use
@@ -130,7 +139,9 @@ app still uses the original fixed model at 640 when it is available.
 5. Remain out of frame for >=8 s; observe `Away`. Re-enter the frame
    and see `Unknown` or input-derived `Working/Idling`.
 6. On Niri, if `input_source` becomes Wayland, test typing/mouse
-   activity, then leave input untouched for >=60 s while visible.
+   activity. Continuous user activity with ~1-second gaps should not
+   alternate `Working`/`Unknown` on every idle notification.
+   Then leave input untouched for >=60 s while visible.
    The UI should show provisional `Working` and `Idling`
    appropriately. Do not use automated synthetic input.
 7. Toggle Stop/Start repeatedly and verify the app opens the camera
